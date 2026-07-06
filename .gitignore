@@ -1,0 +1,15 @@
+# build outputs
+[Bb]in/
+[Oo]bj/
+dist/
+publish/
+installer/out/
+
+# user/IDE
+*.user
+.vs/
+.vscode/
+*.suo
+
+# test artifacts
+TestResults/
