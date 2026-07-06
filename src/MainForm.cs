@@ -864,9 +864,10 @@ internal sealed partial class MainForm : Form
         await OpenInputsAsync(_startupArgs);
         if (_viewerMode)
         {
-            // ウィンドウいっぱいに表示 (選択ハンドル等は出さない)
+            // ウィンドウいっぱいに表示 (選択ハンドル等は出さない)。
+            // このフィット表示がビュアーのズーム下限(=100%)になる
             _canvas.Select(null);
-            _canvas.ZoomFitAll();
+            _canvas.SetViewerBaseline();
         }
     }
 

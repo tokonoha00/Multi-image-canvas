@@ -251,16 +251,98 @@ internal sealed class CanvasSurface : Control
     public void SetZoomAt(Point screenPoint, float zoom)
     {
         if (_doc == null) return;
-        var next = Math.Clamp(zoom, MinZoom, MaxZoom);
+        // ビュアーはフィット表示(=100%)より縮小できない
+        float minZoom = ReadOnlyView ? _viewerBaseZoom : MinZoom;
+        var next = Math.Clamp(zoom, minZoom, MaxZoom);
         if (Math.Abs(next - _doc.Zoom) < 0.00001f) return;
 
         var before = ScreenToWorld(screenPoint);
         _doc.Zoom = next;
         // マウスポインタの指すワールド座標がズーム前後で一致するようスクロールを合わせる
         _doc.Scroll = new PointF(before.X * next - screenPoint.X, before.Y * next - screenPoint.Y);
-        SoftClampScroll();
+
+        if (ReadOnlyView) ApplyViewerConstraints();
+        else SoftClampScroll();
 
         ZoomChanged?.Invoke(this, EventArgs.Empty);
+        Invalidate();
+    }
+
+    // ===== ビュアーモードの表示制約 =====
+
+    private float _viewerBaseZoom = MinZoom;
+
+    // フィット表示をビュアーの基準(ズーム下限)として設定する
+    public void SetViewerBaseline()
+    {
+        if (_doc == null) return;
+        ZoomFitAll();
+        _viewerBaseZoom = Zoom;
+        ApplyViewerConstraints();
+        Invalidate();
+    }
+
+    // 画像がウィンドウからはみ出しているか (パン可否の判定)
+    public bool CanPanViewer()
+    {
+        var b = GetContentBounds();
+        if (b == null) return false;
+        return b.Value.Width * Zoom > ClientSize.Width + 0.5f
+            || b.Value.Height * Zoom > ClientSize.Height + 0.5f;
+    }
+
+    // 軸ごとに「収まるなら中央固定 / はみ出すなら画像の端で停止」を強制する。
+    // 縮小してウィンドウに収まった軸は自動的に中央へ戻る
+    private void ApplyViewerConstraints()
+    {
+        if (_doc == null) return;
+        var bounds = GetContentBounds();
+        if (bounds == null) return;
+
+        var b = bounds.Value;
+        var scroll = _doc.Scroll;
+        float cw = ClientSize.Width, ch = ClientSize.Height;
+        float w = b.Width * Zoom, h = b.Height * Zoom;
+
+        if (w <= cw + 0.5f)
+        {
+            scroll.X = (b.Left + b.Width / 2f) * Zoom - cw / 2f;
+        }
+        else
+        {
+            scroll.X = Math.Clamp(scroll.X, b.Left * Zoom, b.Right * Zoom - cw);
+        }
+
+        if (h <= ch + 0.5f)
+        {
+            scroll.Y = (b.Top + b.Height / 2f) * Zoom - ch / 2f;
+        }
+        else
+        {
+            scroll.Y = Math.Clamp(scroll.Y, b.Top * Zoom, b.Bottom * Zoom - ch);
+        }
+
+        _doc.Scroll = scroll;
+    }
+
+    protected override void OnClientSizeChanged(EventArgs e)
+    {
+        base.OnClientSizeChanged(e);
+        if (!ReadOnlyView || _doc == null || ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+
+        // ウィンドウサイズ変更時はフィット基準を取り直す。
+        // 基準以下になったら再フィット、拡大中なら現在の倍率を保って端だけ揃える
+        bool wasAtBase = Math.Abs(Zoom - _viewerBaseZoom) < 0.001f;
+        var b = GetContentBounds();
+        if (b != null)
+        {
+            float zw = ClientSize.Width / Math.Max(1f, b.Value.Width);
+            float zh = ClientSize.Height / Math.Max(1f, b.Value.Height);
+            _viewerBaseZoom = Math.Clamp(Math.Min(zw, zh) * 0.92f, MinZoom, MaxZoom);
+        }
+
+        if (wasAtBase || Zoom < _viewerBaseZoom) SetViewerBaseline();
+        else ApplyViewerConstraints();
         Invalidate();
     }
 
@@ -605,10 +687,11 @@ internal sealed class CanvasSurface : Control
         _dragStartWorld = world;
         _dragMoved = false;
 
-        // 閲覧専用モード: どのボタンでもパンのみ (選択・編集・メニューなし)
+        // 閲覧専用モード: どのボタンでもパンのみ (選択・編集・メニューなし)。
+        // 画像がウィンドウに収まっている間はドラッグ移動できない
         if (ReadOnlyView)
         {
-            if (e.Button is MouseButtons.Left or MouseButtons.Middle or MouseButtons.Right)
+            if (CanPanViewer() && e.Button is MouseButtons.Left or MouseButtons.Middle or MouseButtons.Right)
             {
                 StartPan(e.Location, e.Button);
             }
@@ -949,9 +1032,17 @@ internal sealed class CanvasSurface : Control
             var dx = e.Location.X - _panStart.X;
             var dy = e.Location.Y - _panStart.Y;
             _doc.Scroll = new PointF(_doc.Scroll.X - dx, _doc.Scroll.Y - dy);
-            SoftClampScroll();
+            if (ReadOnlyView) ApplyViewerConstraints(); // ビュアーは画像の端で停止
+            else SoftClampScroll();
             _panStart = e.Location;
             Invalidate();
+            return;
+        }
+
+        // ビュアーモードのカーソル: パン可能なときだけ手のひら相当を出す
+        if (ReadOnlyView)
+        {
+            Cursor = CanPanViewer() ? Cursors.SizeAll : Cursors.Default;
             return;
         }
 
