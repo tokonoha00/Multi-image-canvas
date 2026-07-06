@@ -102,6 +102,11 @@ internal sealed partial class MainForm : Form
     private string? _sessionFilePath;
     private bool _closingConfirmed;
 
+    // ビュアーモード (エクスプローラーから画像を開いた時の閲覧専用UI)
+    private bool _viewerMode;
+    private readonly ToolStrip _viewerBar = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
+    private ToolStripLabel? _viewerTitle;
+
     private const int CornerRadius = 14;
 
     public MainForm(string[]? startupArgs = null)
@@ -130,28 +135,38 @@ internal sealed partial class MainForm : Form
         try { Font = new Font("Segoe UI Variable Display", 9f); }
         catch { try { Font = new Font("Segoe UI", 9f); } catch { /* フォールバック */ } }
 
+        _viewerMode = DetectViewerMode(_startupArgs);
+
         BuildMenuBar();
         BuildMainLayout();
         WireCanvasEvents();
         WireDragDrop();
         BuildInitialTree();
-        RestoreSession();
+        if (_viewerMode) EnterViewerMode();
+        else RestoreSession();
         ApplyLanguageToControls();
 
         Theme.Changed += (_, _) => ApplyThemeToControls();
 
         _autosaveTimer.Tick += (_, _) => SaveSession();
-        _autosaveTimer.Start();
+        if (!_viewerMode) _autosaveTimer.Start();
 
         Shown += (_, _) =>
         {
             ApplyTreeTheme();
             BeginInvoke(new Action(StartLoadQuickAccessExtras));
-            BeginInvoke(new Action(() => _ = OpenInputsAsync(_startupArgs)));
+            BeginInvoke(new Action(() => _ = OpenStartupInputsAsync()));
         };
 
         FormClosing += (_, e) =>
         {
+            // ビュアーモードはセッションに一切触れずに閉じる (確認ダイアログも出さない)
+            if (_viewerMode)
+            {
+                ToggleOverlayMode(false);
+                return;
+            }
+
             if (!_closingConfirmed)
             {
                 var decision = ShowSessionDecision(Loc.T("アプリを閉じる"),
@@ -827,6 +842,134 @@ internal sealed partial class MainForm : Form
         UpdateSessionTitle();
     }
 
+    // ===== ビュアーモード =====
+
+    // 起動引数が「存在する画像ファイルのみ」の場合はビュアーとして起動する
+    // (.mics/.micl やフォルダ、URLが含まれる場合は通常の編集画面)
+    private static bool DetectViewerMode(string[] args)
+    {
+        var inputs = args.Select(a => a.Trim().Trim('"')).Where(a => !string.IsNullOrWhiteSpace(a)).ToList();
+        if (inputs.Count == 0) return false;
+        return inputs.All(a => File.Exists(a) && ImageDecoder.IsSupported(a));
+    }
+
+    private async Task OpenStartupInputsAsync()
+    {
+        await OpenInputsAsync(_startupArgs);
+        if (_viewerMode)
+        {
+            // ウィンドウいっぱいに表示 (選択ハンドル等は出さない)
+            _canvas.Select(null);
+            _canvas.ZoomFitAll();
+        }
+    }
+
+    // 画像表示の妨げになるUIをすべて隠し、上部バーのみのビュアーにする
+    private void EnterViewerMode()
+    {
+        _canvas.ReadOnlyView = true;
+        _canvas.InsertNaturalSize = true; // 原寸で読み込み、全体表示でフィットさせる
+
+        _menuBar.Visible = false;
+        _sessionTitleLabel.Visible = false;
+        _docTabs.Visible = false;
+        _rightPanel.Visible = false;
+        _overlayFrame.Visible = false;
+        _viewerBar.Visible = true;
+
+        AddDocument(new CanvasDocument(), select: true);
+
+        var first = _startupArgs.Select(a => a.Trim().Trim('"')).FirstOrDefault(File.Exists);
+        if (first != null)
+        {
+            if (_viewerTitle != null) _viewerTitle.Text = Path.GetFileName(first);
+            Text = Path.GetFileName(first) + " - Multi Image Canvas";
+        }
+    }
+
+    private void BuildViewerBar()
+    {
+        _viewerBar.Renderer = new ThemedToolStripRenderer();
+        _viewerBar.BackColor = Theme.Current.ToolbarBg;
+        _viewerBar.ForeColor = Theme.Current.TextPrimary;
+        _viewerBar.AutoSize = false;
+        _viewerBar.Padding = new Padding(10, 4, 10, 2);
+        _viewerBar.Height = 40;
+        _viewerBar.Visible = false;
+        WireTitleBarDrag(_viewerBar);
+
+        var editBtn = new ToolStripButton(" 🖊 " + Loc.T("キャンバスにて編集") + " ")
+        {
+            Margin = new Padding(2, 2, 2, 2),
+            ToolTipText = Loc.T("通常の編集画面に切り替え、この画像を新しいキャンバスに配置した状態にします。"),
+        };
+        editBtn.Click += (_, _) => SwitchToEditorFromViewer();
+        _viewerBar.Items.Add(editBtn);
+
+        _viewerTitle = new ToolStripLabel("") { ForeColor = Theme.Current.TextSecondary, Margin = new Padding(12, 0, 0, 0) };
+        _viewerBar.Items.Add(_viewerTitle);
+
+        var closeBtn = new ToolStripButton(" ✕ ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
+        var maxBtn = new ToolStripButton(" 🗖 ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
+        var minBtn = new ToolStripButton(" ➖ ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
+        closeBtn.Click += (_, _) => Close();
+        maxBtn.Click += (_, _) => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+        minBtn.Click += (_, _) => WindowState = FormWindowState.Minimized;
+        _viewerBar.Items.Add(closeBtn);
+        _viewerBar.Items.Add(maxBtn);
+        _viewerBar.Items.Add(minBtn);
+    }
+
+    // ビュアー → 通常の編集画面へ。前回セッションのタブを復元した上で、
+    // 表示中の画像が載った新しいキャンバスを末尾に追加して選択する
+    private void SwitchToEditorFromViewer()
+    {
+        if (!_viewerMode) return;
+        _viewerMode = false;
+
+        var viewerDoc = ActiveDoc;
+        _canvas.ReadOnlyView = false;
+
+        // ビュアー起動中はセッションを読み書きしていないため、ここで前回タブを復元する
+        var s = SessionStore.Load();
+        _canvas.InsertNaturalSize = s?.InsertNaturalSize ?? false;
+        if (s != null && _appSettings.RestoreTabs && viewerDoc != null)
+        {
+            _docs.Remove(viewerDoc);
+            for (int i = 0; i < s.Tabs.Count; i++)
+            {
+                try
+                {
+                    var doc = LayoutSerializer.FromDto(s.Tabs[i], i < s.TabFilePaths.Count ? s.TabFilePaths[i] : null);
+                    AddDocument(doc, select: false);
+                }
+                catch
+                {
+                    // 個別キャンバスの復元失敗は無視
+                }
+            }
+            _docs.Add(viewerDoc);
+        }
+
+        _viewerBar.Visible = false;
+        _menuBar.Visible = true;
+        _sessionTitleLabel.Visible = true;
+        _docTabs.Visible = true;
+        _rightPanel.Visible = true;
+        _overlayFrame.Visible = true;
+
+        RebuildDocTabs();
+        SelectDocument(_docs.Count - 1);
+        _canvas.ZoomFitAll();
+        if (_naturalMi != null) _naturalMi.Checked = _canvas.InsertNaturalSize;
+        SetSidebarView(_sidebarView);
+        UpdateSidebarBounds();
+        UpdateSessionTitle();
+
+        _autosaveTimer.Start();
+        SaveSession();
+    }
+
     private void UpdateSessionTitle()
     {
         _sessionTitleLabel.Text = string.IsNullOrEmpty(_sessionFilePath)
@@ -893,6 +1036,9 @@ internal sealed partial class MainForm : Form
         var exportImageMi = MI("🖼 " + Loc.T("キャンバスを画像として出力"), "file.export", (_, _) => ExportPng());
         exportImageMi.ToolTipText = Loc.T("キャンバスに配置されている画像が収まる最小のサイズで出力します。");
         menu.DropDownItems.Add(exportImageMi);
+        var shareMi = MI("🔗 " + Loc.T("共有用にエクスポート..."), null, (_, _) => ExportShare());
+        shareMi.ToolTipText = Loc.T("個人情報を含まない画像同梱ファイル(.mics)を作成します。受け取った人はこのアプリでそのまま開けます。");
+        menu.DropDownItems.Add(shareMi);
         menu.DropDownItems.Add(new ToolStripSeparator());
         var newCanvasMi = MI("➕ " + Loc.T("新規キャンバスタブ"), "file.newTab", (_, _) => AddDocument(new CanvasDocument(), true));
         newCanvasMi.ToolTipText = Loc.T("現在のセッション内に空のキャンバスタブを追加します。");
@@ -1131,6 +1277,8 @@ internal sealed partial class MainForm : Form
         Controls.Add(_canvas);
         Controls.Add(_docTabs);
         Controls.Add(_menuBar);
+        BuildViewerBar();
+        Controls.Add(_viewerBar);
         BuildSessionTitleLabel();
 
         _rightPanel.BringToFront();
@@ -1944,6 +2092,46 @@ internal sealed partial class MainForm : Form
         File.Move(tempFile, fileName);
     }
 
+    // 共有用エクスポート: プライバシー処理を通した画像同梱パッケージを作成する
+    private void ExportShare()
+    {
+        if (_docs.Count == 0 || _docs.All(d => d.Items.Count == 0))
+        {
+            MessageBox.Show(this, Loc.T("共有できる画像がキャンバスにありません。"), Loc.T("共有用にエクスポート"),
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var optDlg = new ShareExportForm();
+        if (optDlg.ShowDialog(this) != DialogResult.OK) return;
+
+        using var dlg = new SaveFileDialog
+        {
+            Filter = SessionFileFilter,
+            FileName = "shared_canvas.mics",
+            DefaultExt = "mics",
+            AddExtension = true,
+        };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var result = ShareExporter.Export(_docs, _activeDocIndex, optDlg.Options, dlg.FileName);
+            var msg = string.Format(
+                Loc.T("共有用ファイルを書き出しました。\nキャンバス: {0} / 同梱画像: {1} (うちメタデータ除去 {2})"),
+                result.CanvasCount, result.ItemCount, result.ReencodedCount);
+            if (result.HiddenSkipped > 0)
+                msg += "\n" + string.Format(Loc.T("除外した非表示レイヤー: {0}"), result.HiddenSkipped);
+            if (result.MissingCount > 0)
+                msg += "\n" + string.Format(Loc.T("元ファイルが見つからず同梱できなかった画像: {0}"), result.MissingCount);
+            MessageBox.Show(this, msg, Loc.T("共有用にエクスポート"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, Loc.T("出力失敗"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private void ExportCurrentLayoutSettings()
     {
         var doc = ActiveDoc;
@@ -2056,6 +2244,11 @@ internal sealed partial class MainForm : Form
     private static SessionData LoadSessionPackage(string fileName)
     {
         using var zip = ZipFile.OpenRead(fileName);
+
+        // 共有で受け取ったファイルは信頼できない入力として扱う (zip爆弾・不正ファイル対策)
+        if (zip.Entries.Count > SharePackageSecurity.MaxEntries)
+            throw new InvalidDataException(Loc.T("セッションファイルのエントリ数が多すぎます。"));
+
         var sessionEntry = zip.GetEntry("session.json") ?? throw new InvalidDataException("セッション情報が見つかりません。");
         using var sessionStream = sessionEntry.Open();
         using var reader = new StreamReader(sessionStream, Encoding.UTF8);
@@ -2065,12 +2258,16 @@ internal sealed partial class MainForm : Form
         var extractRoot = Path.GetFullPath(extractDir + Path.DirectorySeparatorChar);
         Directory.CreateDirectory(extractRoot);
 
+        long totalBytes = 0;
         foreach (var entry in zip.Entries.Where(e => e.FullName.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) && !e.FullName.EndsWith("/")))
         {
+            // 画像以外 (実行ファイル等) は展開しない
+            if (!SharePackageSecurity.IsAllowedAssetName(entry.Name)) continue;
+
             var target = Path.GetFullPath(Path.Combine(extractRoot, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
             if (!target.StartsWith(extractRoot, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("セッションファイルの画像パスが不正です。");
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            entry.ExtractToFile(target, overwrite: true);
+            SharePackageSecurity.ExtractWithLimit(entry, target, ref totalBytes);
         }
 
         for (int i = 0; i < data.Tabs.Count; i++)
@@ -2353,6 +2550,11 @@ internal sealed partial class MainForm : Form
         // 設定で変更可能なショートカット
         if (_keyMap.TryGetAction(keyData, out var actionId))
         {
+            // ビュアーモードでは表示系以外のショートカットを無効化
+            if (_viewerMode && actionId is not ("view.zoomIn" or "view.zoomOut" or "view.zoom100" or "view.fitAll" or "view.hideUi" or "help.shortcuts"))
+            {
+                return true;
+            }
             ExecuteAction(actionId);
             return true;
         }
@@ -2468,6 +2670,7 @@ internal sealed partial class MainForm : Form
     {
         if (_uiHidden) return;
         _menuBar.Visible = false;
+        _viewerBar.Visible = false;
         _sessionTitleLabel.Visible = false;
         _docTabs.Visible = false;
         _rightPanel.Visible = false;
@@ -2481,6 +2684,13 @@ internal sealed partial class MainForm : Form
     private void RestoreUi()
     {
         if (!_uiHidden) return;
+        if (_viewerMode)
+        {
+            // ビュアーモードは上部バーだけ戻す
+            _viewerBar.Visible = true;
+            _uiHidden = false;
+            return;
+        }
         _menuBar.Visible = true;
         _sessionTitleLabel.Visible = true;
         _docTabs.Visible = true;

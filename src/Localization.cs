@@ -154,6 +154,29 @@ internal static class Loc
         ["ライト"] = "Light",
         ["ミッドナイト"] = "Midnight",
         ["ハイコントラスト"] = "High contrast",
+        // 共有機能
+        ["共有用にエクスポート..."] = "Export for sharing...",
+        ["共有用にエクスポート"] = "Export for sharing",
+        ["個人情報を含まない画像同梱ファイル(.mics)を作成します。受け取った人はこのアプリでそのまま開けます。"] = "Create a packaged file (.mics) without personal information. Recipients can open it directly with this app.",
+        ["キャンバスを共有用にエクスポート"] = "Export canvas for sharing",
+        ["共有する範囲"] = "What to share",
+        ["現在のキャンバスのみ"] = "Current canvas only",
+        ["すべてのキャンバスタブ"] = "All canvas tabs",
+        ["プライバシー保護 (推奨: すべてON)"] = "Privacy protection (recommended: all ON)",
+        ["メタデータを除去 (EXIF・位置情報・撮影機材など)"] = "Strip metadata (EXIF, GPS, camera info)",
+        ["トリミングで隠した部分のピクセルを含めない"] = "Exclude pixels hidden by cropping",
+        ["非表示レイヤーを含めない"] = "Exclude hidden layers",
+        ["・元のファイル名/フォルダ/PC名は含まれません (連番に匿名化)\n・ネットワークへの送信は行いません (ファイルを書き出すだけ)\n・アニメーションGIFは動きを保つため原本のまま同梱されます"] = "- Original file names, folders, and PC name are not included (anonymized)\n- Nothing is sent over the network (only writes a file)\n- Animated GIFs are embedded as-is to preserve motion",
+        ["エクスポート..."] = "Export...",
+        ["共有できる画像がキャンバスにありません。"] = "There are no images on the canvas to share.",
+        ["共有用ファイルを書き出しました。\nキャンバス: {0} / 同梱画像: {1} (うちメタデータ除去 {2})"] = "Share file created.\nCanvases: {0} / embedded images: {1} ({2} with metadata stripped)",
+        ["除外した非表示レイヤー: {0}"] = "Hidden layers excluded: {0}",
+        ["元ファイルが見つからず同梱できなかった画像: {0}"] = "Images not embedded (source file missing): {0}",
+        ["セッションファイルのエントリ数が多すぎます。"] = "The session file contains too many entries.",
+        ["セッションファイルの展開サイズが上限を超えています。"] = "The session file exceeds the extraction size limit.",
+        // ビュアーモード
+        ["キャンバスにて編集"] = "Edit on canvas",
+        ["通常の編集画面に切り替え、この画像を新しいキャンバスに配置した状態にします。"] = "Switch to the normal editor with this image placed on a new canvas.",
     };
 
     private static readonly Dictionary<string, string> JaByEn = En

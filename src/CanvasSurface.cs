@@ -77,6 +77,10 @@ internal sealed class CanvasSurface : Control
     // グリッド線は常時表示。グリッドスナップは設定でON/OFF
     public bool GridSnapEnabled { get; set; }
 
+    // 閲覧専用モード (ビュアー起動時)。選択・編集を無効化し、クリックはすべてパンとして扱う。
+    // グリッド線も表示しない
+    public bool ReadOnlyView { get; set; }
+
     // ドラッグ・パン等の操作中か (フローティングUIの一時退避に使用)。
     // 単純なクリックで点滅しないよう、アイテム操作は実際に動き始めてからtrueにする
     public bool IsInteracting =>
@@ -600,6 +604,16 @@ internal sealed class CanvasSurface : Control
         var world = ScreenToWorld(e.Location);
         _dragStartWorld = world;
         _dragMoved = false;
+
+        // 閲覧専用モード: どのボタンでもパンのみ (選択・編集・メニューなし)
+        if (ReadOnlyView)
+        {
+            if (e.Button is MouseButtons.Left or MouseButtons.Middle or MouseButtons.Right)
+            {
+                StartPan(e.Location, e.Button);
+            }
+            return;
+        }
 
         // 2. 中ボタン / Space+左 = ドラッグパン
         if (e.Button == MouseButtons.Middle || (SpacePanning && e.Button == MouseButtons.Left))
@@ -1369,7 +1383,7 @@ internal sealed class CanvasSurface : Control
             g.Clear(t.CanvasBg);
         }
 
-        if (_bgOpacity > 0.0f) DrawGrid(g);
+        if (_bgOpacity > 0.0f && !ReadOnlyView) DrawGrid(g);
 
         if (_doc == null)
         {
