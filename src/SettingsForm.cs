@@ -1,9 +1,11 @@
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace MultiImageCanvas;
 
-// 設定ダイアログ: テーマ / セッション / 自動保存 / キー割り当て
+// 設定ダイアログ。左側のカテゴリナビでページを切り替えるジャンル別構成:
+//   一般 / 表示 / 編集 / キー割り当て / オーバーレイ / ファイル関連付け
 internal sealed class SettingsForm : Form
 {
     private readonly KeyMap _keyMap;
@@ -17,6 +19,7 @@ internal sealed class SettingsForm : Form
     private int _appliedImageScalePercent;
     private string _appliedLanguage;
     private string _appliedOverlayAnimation;
+
     private readonly ListView _keyList = new();
     private readonly ComboBox _themeCombo = new();
     private readonly CheckBox _restoreTabsCheck = new();
@@ -26,7 +29,12 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox _imageScaleCombo = new();
     private readonly ComboBox _languageCombo = new();
     private readonly ComboBox _animCombo = new();
+    private readonly CheckedListBox _assocList = new();
     private Button? _applyBtn;
+
+    private readonly ListBox _nav = new();
+    private readonly Panel _pageHost = new();
+    private readonly List<(string Title, Panel Page)> _pages = [];
 
     public string SelectedTheme => Loc.J(_themeCombo.SelectedItem as string ?? Theme.Current.Name);
     public bool RestoreTabs => _restoreTabsCheck.Checked;
@@ -58,8 +66,8 @@ internal sealed class SettingsForm : Form
 
         var t = Theme.Current;
         Text = Loc.T("設定");
-        Width = 600;
-        Height = 780;
+        Width = 720;
+        Height = 620;
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -70,154 +78,8 @@ internal sealed class SettingsForm : Form
 
         var root = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16), BackColor = t.Background };
 
-        // ===== 一般 =====
-        var generalGroup = new GroupBox
-        {
-            Text = Loc.T("一般"),
-            Dock = DockStyle.Top,
-            Height = 324,
-            ForeColor = t.TextPrimary,
-            Padding = new Padding(12),
-        };
-
-        var themeLabel = new Label { Text = Loc.T("UIテーマ:"), AutoSize = true, Location = new Point(16, 168), ForeColor = t.TextPrimary };
-        _themeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _themeCombo.Location = new Point(150, 164);
-        _themeCombo.Width = 180;
-        _themeCombo.FlatStyle = FlatStyle.Flat;
-        _themeCombo.BackColor = t.SurfaceLight;
-        _themeCombo.ForeColor = t.TextPrimary;
-        foreach (var preset in Theme.Presets) _themeCombo.Items.Add(Loc.T(preset.Name));
-        _themeCombo.SelectedItem = Loc.T(Theme.Current.Name);
-
-        _restoreTabsCheck.Text = Loc.T("起動時に前回のキャンバスタブを復元する");
-        _restoreTabsCheck.AutoSize = true;
-        _restoreTabsCheck.Location = new Point(16, 32);
-        _restoreTabsCheck.ForeColor = t.TextPrimary;
-        _restoreTabsCheck.Checked = restoreTabs;
-
-        var autosaveLabel = new Label { Text = Loc.T("セッション自動保存間隔:"), AutoSize = true, Location = new Point(16, 68), ForeColor = t.TextPrimary };
-        _autosaveNum.Minimum = 10;
-        _autosaveNum.Maximum = 600;
-        _autosaveNum.Value = _appliedAutosaveSeconds;
-        _autosaveNum.Location = new Point(150, 64);
-        _autosaveNum.Width = 70;
-        _autosaveNum.BackColor = t.SurfaceLight;
-        _autosaveNum.ForeColor = t.TextPrimary;
-        var secLabel = new Label { Text = Loc.T("秒"), AutoSize = true, Location = new Point(226, 68), ForeColor = t.TextPrimary };
-
-        var snapGroup = new GroupBox
-        {
-            Text = Loc.T("スナップ機能"),
-            Location = new Point(16, 98),
-            Size = new Size(330, 54),
-            ForeColor = t.TextPrimary,
-        };
-
-        _snapCheck.Text = Loc.T("画像スナップ");
-        _snapCheck.AutoSize = true;
-        _snapCheck.Location = new Point(16, 22);
-        _snapCheck.ForeColor = t.TextPrimary;
-        _snapCheck.Checked = snapEnabled;
-
-        _gridSnapCheck.Text = Loc.T("グリッドスナップ");
-        _gridSnapCheck.AutoSize = true;
-        _gridSnapCheck.Location = new Point(150, 22);
-        _gridSnapCheck.ForeColor = t.TextPrimary;
-        _gridSnapCheck.Checked = gridSnap;
-
-        snapGroup.Controls.Add(_snapCheck);
-        snapGroup.Controls.Add(_gridSnapCheck);
-
-        var scaleLabel = new Label { Text = Loc.T("画像読み込み倍率:"), AutoSize = true, Location = new Point(16, 196), ForeColor = t.TextPrimary };
-        _imageScaleCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _imageScaleCombo.Location = new Point(150, 192);
-        _imageScaleCombo.Width = 100;
-        _imageScaleCombo.FlatStyle = FlatStyle.Flat;
-        _imageScaleCombo.BackColor = t.SurfaceLight;
-        _imageScaleCombo.ForeColor = t.TextPrimary;
-        foreach (var value in new[] { 25, 50, 75, 100, 125, 150, 200 }) _imageScaleCombo.Items.Add($"{value}%");
-        _imageScaleCombo.SelectedItem = $"{_appliedImageScalePercent}%";
-
-        var languageLabel = new Label { Text = Loc.T("言語:"), AutoSize = true, Location = new Point(16, 236), ForeColor = t.TextPrimary };
-        _languageCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _languageCombo.Location = new Point(150, 232);
-        _languageCombo.Width = 180;
-        _languageCombo.FlatStyle = FlatStyle.Flat;
-        _languageCombo.BackColor = t.SurfaceLight;
-        _languageCombo.ForeColor = t.TextPrimary;
-        _languageCombo.Items.Add(Loc.Japanese);
-        _languageCombo.Items.Add(Loc.English);
-        _languageCombo.SelectedItem = Loc.Normalize(_appliedLanguage);
-
-        var animLabel = new Label { Text = Loc.T("オーバーレイ登場アニメ:"), AutoSize = true, Location = new Point(16, 276), ForeColor = t.TextPrimary };
-        _animCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _animCombo.Location = new Point(150, 272);
-        _animCombo.Width = 180;
-        _animCombo.FlatStyle = FlatStyle.Flat;
-        _animCombo.BackColor = t.SurfaceLight;
-        _animCombo.ForeColor = t.TextPrimary;
-        foreach (var name in OverlayAnimations.Names) _animCombo.Items.Add(Loc.T(name));
-        _animCombo.SelectedItem = Loc.T(_appliedOverlayAnimation);
-
-        generalGroup.Controls.Add(themeLabel);
-        generalGroup.Controls.Add(_themeCombo);
-        generalGroup.Controls.Add(_restoreTabsCheck);
-        generalGroup.Controls.Add(autosaveLabel);
-        generalGroup.Controls.Add(_autosaveNum);
-        generalGroup.Controls.Add(secLabel);
-        generalGroup.Controls.Add(snapGroup);
-        generalGroup.Controls.Add(scaleLabel);
-        generalGroup.Controls.Add(_imageScaleCombo);
-        generalGroup.Controls.Add(languageLabel);
-        generalGroup.Controls.Add(_languageCombo);
-        generalGroup.Controls.Add(animLabel);
-        generalGroup.Controls.Add(_animCombo);
-
-        // ===== キー割り当て =====
-        var keyGroup = new GroupBox
-        {
-            Text = Loc.T("キー割り当て (ダブルクリックまたは「変更」で編集)"),
-            Dock = DockStyle.Fill,
-            ForeColor = t.TextPrimary,
-            Padding = new Padding(12),
-        };
-
-        _keyList.View = View.Details;
-        _keyList.FullRowSelect = true;
-        _keyList.MultiSelect = false;
-        _keyList.HeaderStyle = ColumnHeaderStyle.Nonclickable;
-        _keyList.BackColor = t.SurfaceLight;
-        _keyList.ForeColor = t.TextPrimary;
-        _keyList.BorderStyle = BorderStyle.FixedSingle;
-        _keyList.Dock = DockStyle.Fill;
-        _keyList.Columns.Add(Loc.T("分類"), 80);
-        _keyList.Columns.Add(Loc.T("操作"), 220);
-        _keyList.Columns.Add(Loc.T("キー"), 190);
-        _keyList.DoubleClick += (_, _) => ChangeSelectedKey();
-
-        var keyButtons = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 40,
-            FlowDirection = FlowDirection.LeftToRight,
-            Padding = new Padding(0, 6, 0, 0),
-        };
-        keyButtons.Controls.Add(MakeButton(Loc.T("変更..."), (_, _) => ChangeSelectedKey()));
-        keyButtons.Controls.Add(MakeButton(Loc.T("割り当て解除"), (_, _) => ClearSelectedKey()));
-        keyButtons.Controls.Add(MakeButton(Loc.T("選択を既定に戻す"), (_, _) => ResetSelectedKey()));
-        keyButtons.Controls.Add(MakeButton(Loc.T("すべて既定に戻す"), (_, _) => ResetAllKeys()));
-
-        keyGroup.Controls.Add(_keyList);
-        keyGroup.Controls.Add(keyButtons);
-
-        // ===== 自動保存ログ / OK / 適用 / キャンセル =====
-        var bottomPanel = new Panel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 76,
-            BackColor = t.Background,
-        };
+        // ===== 下部: 自動保存ログ / OK / 適用 / キャンセル =====
+        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 76, BackColor = t.Background };
         var autosaveLogLabel = new Label
         {
             Text = autosaveLog,
@@ -250,16 +112,353 @@ internal sealed class SettingsForm : Form
         bottomPanel.Controls.Add(autosaveLogLabel);
         bottomPanel.Controls.Add(bottomRow);
 
-        var spacer = new Panel { Dock = DockStyle.Top, Height = 10, BackColor = t.Background };
+        // ===== 左ナビ =====
+        _nav.Dock = DockStyle.Left;
+        _nav.Width = 150;
+        _nav.BorderStyle = BorderStyle.None;
+        _nav.BackColor = t.Surface;
+        _nav.ForeColor = t.TextPrimary;
+        _nav.DrawMode = DrawMode.OwnerDrawFixed;
+        _nav.ItemHeight = 36;
+        _nav.IntegralHeight = false;
+        _nav.DrawItem += Nav_DrawItem;
+        _nav.SelectedIndexChanged += (_, _) => ShowPage(_nav.SelectedIndex);
 
-        root.Controls.Add(keyGroup);
-        root.Controls.Add(spacer);
-        root.Controls.Add(generalGroup);
+        var navHost = new Panel { Dock = DockStyle.Left, Width = 162, Padding = new Padding(0, 0, 12, 0), BackColor = t.Background };
+        navHost.Controls.Add(_nav);
+
+        _pageHost.Dock = DockStyle.Fill;
+        _pageHost.BackColor = t.Background;
+
+        // ===== 各ページ =====
+        AddPage(Loc.T("一般"), BuildGeneralPage(t));
+        AddPage(Loc.T("表示"), BuildDisplayPage(t));
+        AddPage(Loc.T("編集"), BuildEditPage(t));
+        AddPage(Loc.T("キー割り当て"), BuildKeysPage(t));
+        AddPage(Loc.T("オーバーレイ"), BuildOverlayPage(t));
+        AddPage(Loc.T("ファイル関連付け"), BuildAssociationPage(t));
+
+        root.Controls.Add(_pageHost);
+        root.Controls.Add(navHost);
         root.Controls.Add(bottomPanel);
         Controls.Add(root);
 
         RefreshKeyList();
+        RefreshAssociationList();
         WireDirtyTracking();
+        _nav.SelectedIndex = 0;
+    }
+
+    private void AddPage(string title, Panel page)
+    {
+        page.Dock = DockStyle.Fill;
+        page.Visible = false;
+        _pageHost.Controls.Add(page);
+        _pages.Add((title, page));
+        _nav.Items.Add(title);
+    }
+
+    private void ShowPage(int index)
+    {
+        for (int i = 0; i < _pages.Count; i++)
+        {
+            _pages[i].Page.Visible = i == index;
+        }
+    }
+
+    private void Nav_DrawItem(object? sender, DrawItemEventArgs e)
+    {
+        var t = Theme.Current;
+        var g = e.Graphics;
+        using (var bg = new SolidBrush(t.Surface))
+        {
+            g.FillRectangle(bg, e.Bounds);
+        }
+
+        if (e.Index < 0 || e.Index >= _nav.Items.Count) return;
+        bool selected = (e.State & DrawItemState.Selected) != 0;
+
+        if (selected)
+        {
+            var rect = new Rectangle(e.Bounds.X + 4, e.Bounds.Y + 3, e.Bounds.Width - 8, e.Bounds.Height - 6);
+            using var brush = new SolidBrush(t.AccentDark);
+            using var path = RoundedRect(rect, 8);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.FillPath(brush, path);
+        }
+
+        TextRenderer.DrawText(g, _nav.Items[e.Index]?.ToString(), Font,
+            new Rectangle(e.Bounds.X + 14, e.Bounds.Y, e.Bounds.Width - 14, e.Bounds.Height),
+            t.TextPrimary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+    }
+
+    private static GraphicsPath RoundedRect(Rectangle bounds, int radius)
+    {
+        var path = new GraphicsPath();
+        var d = radius * 2;
+        path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+        path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+        path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+        path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    // ===== ページ構築 =====
+
+    private Panel BuildGeneralPage(Theme t)
+    {
+        var page = new Panel { BackColor = t.Background };
+
+        _restoreTabsCheck.Text = Loc.T("起動時に前回のキャンバスタブを復元する");
+        _restoreTabsCheck.AutoSize = true;
+        _restoreTabsCheck.Location = new Point(8, 16);
+        _restoreTabsCheck.ForeColor = t.TextPrimary;
+        _restoreTabsCheck.Checked = _appliedRestoreTabs;
+
+        var autosaveLabel = new Label { Text = Loc.T("セッション自動保存間隔:"), AutoSize = true, Location = new Point(8, 56), ForeColor = t.TextPrimary };
+        _autosaveNum.Minimum = 10;
+        _autosaveNum.Maximum = 600;
+        _autosaveNum.Value = _appliedAutosaveSeconds;
+        _autosaveNum.Location = new Point(180, 52);
+        _autosaveNum.Width = 70;
+        _autosaveNum.BackColor = t.SurfaceLight;
+        _autosaveNum.ForeColor = t.TextPrimary;
+        var secLabel = new Label { Text = Loc.T("秒"), AutoSize = true, Location = new Point(256, 56), ForeColor = t.TextPrimary };
+
+        var languageLabel = new Label { Text = Loc.T("言語:"), AutoSize = true, Location = new Point(8, 96), ForeColor = t.TextPrimary };
+        _languageCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _languageCombo.Location = new Point(180, 92);
+        _languageCombo.Width = 180;
+        _languageCombo.FlatStyle = FlatStyle.Flat;
+        _languageCombo.BackColor = t.SurfaceLight;
+        _languageCombo.ForeColor = t.TextPrimary;
+        _languageCombo.Items.Add(Loc.Japanese);
+        _languageCombo.Items.Add(Loc.English);
+        _languageCombo.SelectedItem = Loc.Normalize(_appliedLanguage);
+
+        page.Controls.Add(_restoreTabsCheck);
+        page.Controls.Add(autosaveLabel);
+        page.Controls.Add(_autosaveNum);
+        page.Controls.Add(secLabel);
+        page.Controls.Add(languageLabel);
+        page.Controls.Add(_languageCombo);
+        return page;
+    }
+
+    private Panel BuildDisplayPage(Theme t)
+    {
+        var page = new Panel { BackColor = t.Background };
+
+        var themeLabel = new Label { Text = Loc.T("UIテーマ:"), AutoSize = true, Location = new Point(8, 20), ForeColor = t.TextPrimary };
+        _themeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _themeCombo.Location = new Point(180, 16);
+        _themeCombo.Width = 180;
+        _themeCombo.FlatStyle = FlatStyle.Flat;
+        _themeCombo.BackColor = t.SurfaceLight;
+        _themeCombo.ForeColor = t.TextPrimary;
+        foreach (var preset in Theme.Presets) _themeCombo.Items.Add(Loc.T(preset.Name));
+        _themeCombo.SelectedItem = Loc.T(Theme.Current.Name);
+
+        page.Controls.Add(themeLabel);
+        page.Controls.Add(_themeCombo);
+        return page;
+    }
+
+    private Panel BuildEditPage(Theme t)
+    {
+        var page = new Panel { BackColor = t.Background };
+
+        var snapGroup = new GroupBox
+        {
+            Text = Loc.T("スナップ機能"),
+            Location = new Point(8, 12),
+            Size = new Size(360, 56),
+            ForeColor = t.TextPrimary,
+        };
+        _snapCheck.Text = Loc.T("画像スナップ");
+        _snapCheck.AutoSize = true;
+        _snapCheck.Location = new Point(16, 22);
+        _snapCheck.ForeColor = t.TextPrimary;
+        _snapCheck.Checked = _appliedSnapEnabled;
+        _gridSnapCheck.Text = Loc.T("グリッドスナップ");
+        _gridSnapCheck.AutoSize = true;
+        _gridSnapCheck.Location = new Point(160, 22);
+        _gridSnapCheck.ForeColor = t.TextPrimary;
+        _gridSnapCheck.Checked = _appliedGridSnap;
+        snapGroup.Controls.Add(_snapCheck);
+        snapGroup.Controls.Add(_gridSnapCheck);
+
+        var scaleLabel = new Label { Text = Loc.T("画像読み込み倍率:"), AutoSize = true, Location = new Point(8, 92), ForeColor = t.TextPrimary };
+        _imageScaleCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _imageScaleCombo.Location = new Point(180, 88);
+        _imageScaleCombo.Width = 100;
+        _imageScaleCombo.FlatStyle = FlatStyle.Flat;
+        _imageScaleCombo.BackColor = t.SurfaceLight;
+        _imageScaleCombo.ForeColor = t.TextPrimary;
+        foreach (var value in new[] { 25, 50, 75, 100, 125, 150, 200 }) _imageScaleCombo.Items.Add($"{value}%");
+        _imageScaleCombo.SelectedItem = $"{_appliedImageScalePercent}%";
+
+        page.Controls.Add(snapGroup);
+        page.Controls.Add(scaleLabel);
+        page.Controls.Add(_imageScaleCombo);
+        return page;
+    }
+
+    private Panel BuildKeysPage(Theme t)
+    {
+        var page = new Panel { BackColor = t.Background };
+
+        _keyList.View = View.Details;
+        _keyList.FullRowSelect = true;
+        _keyList.MultiSelect = false;
+        _keyList.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+        _keyList.BackColor = t.SurfaceLight;
+        _keyList.ForeColor = t.TextPrimary;
+        _keyList.BorderStyle = BorderStyle.FixedSingle;
+        _keyList.Dock = DockStyle.Fill;
+        _keyList.Columns.Add(Loc.T("分類"), 76);
+        _keyList.Columns.Add(Loc.T("操作"), 220);
+        _keyList.Columns.Add(Loc.T("キー"), 160);
+        _keyList.DoubleClick += (_, _) => ChangeSelectedKey();
+
+        var hint = new Label
+        {
+            Text = Loc.T("ダブルクリックまたは「変更」で編集"),
+            Dock = DockStyle.Top,
+            Height = 24,
+            ForeColor = t.TextSecondary,
+            BackColor = t.Background,
+        };
+
+        var keyButtons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 40,
+            FlowDirection = FlowDirection.LeftToRight,
+            Padding = new Padding(0, 6, 0, 0),
+        };
+        keyButtons.Controls.Add(MakeButton(Loc.T("変更..."), (_, _) => ChangeSelectedKey()));
+        keyButtons.Controls.Add(MakeButton(Loc.T("割り当て解除"), (_, _) => ClearSelectedKey()));
+        keyButtons.Controls.Add(MakeButton(Loc.T("選択を既定に戻す"), (_, _) => ResetSelectedKey()));
+        keyButtons.Controls.Add(MakeButton(Loc.T("すべて既定に戻す"), (_, _) => ResetAllKeys()));
+
+        page.Controls.Add(_keyList);
+        page.Controls.Add(keyButtons);
+        page.Controls.Add(hint);
+        page.Controls.SetChildIndex(hint, page.Controls.Count - 1);
+        return page;
+    }
+
+    private Panel BuildOverlayPage(Theme t)
+    {
+        var page = new Panel { BackColor = t.Background };
+
+        var animLabel = new Label { Text = Loc.T("オーバーレイ登場アニメ:"), AutoSize = true, Location = new Point(8, 20), ForeColor = t.TextPrimary };
+        _animCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _animCombo.Location = new Point(180, 16);
+        _animCombo.Width = 180;
+        _animCombo.FlatStyle = FlatStyle.Flat;
+        _animCombo.BackColor = t.SurfaceLight;
+        _animCombo.ForeColor = t.TextPrimary;
+        foreach (var name in OverlayAnimations.Names) _animCombo.Items.Add(Loc.T(name));
+        _animCombo.SelectedItem = Loc.T(_appliedOverlayAnimation);
+
+        var hotkeyHint = new Label
+        {
+            Text = Loc.T("グローバルホットキー:\n  Ctrl+Alt+H  オーバーレイ表示/非表示\n  Ctrl+Alt+T  クリック透過\n  Ctrl+Alt+PgUp/PgDn  透過率"),
+            AutoSize = true,
+            Location = new Point(8, 64),
+            ForeColor = t.TextSecondary,
+        };
+
+        page.Controls.Add(animLabel);
+        page.Controls.Add(_animCombo);
+        page.Controls.Add(hotkeyHint);
+        return page;
+    }
+
+    private Panel BuildAssociationPage(Theme t)
+    {
+        var page = new Panel { BackColor = t.Background };
+
+        var desc = new Label
+        {
+            Text = Loc.T("このアプリで開けるようにする拡張子を選んで「登録」を押してください。\n登録後、「Windowsの既定のアプリ設定」で Multi Image Canvas を既定に選べます。\n(登録は現在のユーザーのみ・管理者権限不要)"),
+            Dock = DockStyle.Top,
+            Height = 58,
+            ForeColor = t.TextSecondary,
+            BackColor = t.Background,
+        };
+
+        _assocList.BorderStyle = BorderStyle.FixedSingle;
+        _assocList.BackColor = t.SurfaceLight;
+        _assocList.ForeColor = t.TextPrimary;
+        _assocList.CheckOnClick = true;
+        _assocList.Dock = DockStyle.Fill;
+        _assocList.IntegralHeight = false;
+        _assocList.MultiColumn = true;
+        _assocList.ColumnWidth = 110;
+
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 76,
+            FlowDirection = FlowDirection.LeftToRight,
+            Padding = new Padding(0, 6, 0, 0),
+        };
+        buttons.Controls.Add(MakeButton(Loc.T("選択した拡張子を登録"), (_, _) => ApplyAssociations()));
+        buttons.Controls.Add(MakeButton(Loc.T("すべて解除"), (_, _) => UnregisterAssociations()));
+        buttons.Controls.Add(MakeButton(Loc.T("Windowsの既定のアプリ設定を開く"), (_, _) => FileAssociation.OpenWindowsDefaultAppsSettings()));
+
+        page.Controls.Add(_assocList);
+        page.Controls.Add(buttons);
+        page.Controls.Add(desc);
+        page.Controls.SetChildIndex(desc, page.Controls.Count - 1);
+        return page;
+    }
+
+    private void RefreshAssociationList()
+    {
+        var registered = FileAssociation.GetRegisteredExtensions();
+        _assocList.BeginUpdate();
+        _assocList.Items.Clear();
+        foreach (var ext in FileAssociation.AssociableExtensions)
+        {
+            _assocList.Items.Add(ext, registered.Contains(ext));
+        }
+        _assocList.EndUpdate();
+    }
+
+    private void ApplyAssociations()
+    {
+        try
+        {
+            var selected = _assocList.CheckedItems.Cast<string>().ToList();
+            FileAssociation.Apply(selected);
+            MessageBox.Show(this,
+                string.Format(Loc.T("{0} 件の拡張子を登録しました。\n既定のアプリにするには「Windowsの既定のアプリ設定を開く」から Multi Image Canvas を選択してください。"), selected.Count),
+                Loc.T("ファイル関連付け"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, Loc.T("ファイル関連付け"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void UnregisterAssociations()
+    {
+        try
+        {
+            FileAssociation.UnregisterAll();
+            RefreshAssociationList();
+            MessageBox.Show(this, Loc.T("ファイル関連付けをすべて解除しました。"),
+                Loc.T("ファイル関連付け"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, Loc.T("ファイル関連付け"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private Button MakeButton(string text, EventHandler onClick)

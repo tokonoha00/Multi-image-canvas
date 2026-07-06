@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Multi Image Canvas インストーラー (ユーザー単位・管理者権限不要)
+  - %LOCALAPPDATA%\Programs\MultiImageCanvas にインストール
+  - スタートメニューショートカット
+  - 「既定のアプリ」対応の登録 (RegisteredApplications + Capabilities + ProgID)
+    ※実際に既定にするのはWindows設定でユーザーが選択する (Windowsの仕様)
+  - アンインストールで登録をすべて除去
+  ビルド: tools\make_installer.ps1
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Multi Image Canvas"
+           Manufacturer="tokonoha00"
+           Version="$(var.Version)"
+           UpgradeCode="7f6b1a52-9c3e-4c8f-9a1d-2b8e4a5c6d70"
+           Scope="perUser"
+           Language="1041"
+           Codepage="65001">
+
+    <MajorUpgrade DowngradeErrorMessage="新しいバージョンが既にインストールされています。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="MultiImageCanvas" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <ComponentGroup Id="AppComponents" Directory="INSTALLFOLDER">
+      <Component Id="MainExe" Guid="a3d9c2e1-1f4b-4f6a-8f30-6f2a1b9c4d81">
+        <File Id="MainExeFile" Source="$(var.PublishDir)\MultiImageCanvas.exe" />
+        <RegistryValue Root="HKCU" Key="Software\MultiImageCanvas" Name="InstallPath"
+                       Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+        <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+      </Component>
+
+      <Component Id="StartMenuShortcut" Guid="b1e8d3f2-2a5c-4d7b-9e41-7a3b2c8d5e92">
+        <Shortcut Id="AppShortcut" Directory="ProgramMenuFolder" Name="Multi Image Canvas"
+                  Target="[INSTALLFOLDER]MultiImageCanvas.exe" WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RegistryValue Root="HKCU" Key="Software\MultiImageCanvas" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+      <!-- 既定のアプリ対応: アプリ登録 + Capabilities + ProgID (HKCUのみ) -->
+      <Component Id="DefaultProgramsRegistration" Guid="c2f9e4a3-3b6d-4e8c-af52-8b4c3d9e6fa3">
+        <RegistryValue Root="HKCU" Key="Software\MultiImageCanvas" Name="Registered"
+                       Type="integer" Value="1" KeyPath="yes" />
+
+        <RegistryValue Root="HKCU" Key="Software\RegisteredApplications"
+                       Name="Multi Image Canvas" Type="string"
+                       Value="Software\MultiImageCanvas\Capabilities" />
+
+        <RegistryKey Root="HKCU" Key="Software\MultiImageCanvas\Capabilities" ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="ApplicationName" Type="string" Value="Multi Image Canvas" />
+          <RegistryValue Name="ApplicationDescription" Type="string" Value="画像のオーバーレイ表示・キャンバス編集ツール" />
+          <RegistryKey Key="FileAssociations">
+            <RegistryValue Name=".png" Type="string" Value="MultiImageCanvas.Image" />
+            <RegistryValue Name=".jpg" Type="string" Value="MultiImageCanvas.Image" />
+            <RegistryValue Name=".jpeg" Type="string" Value="MultiImageCanvas.Image" />
+            <RegistryValue Name=".bmp" Type="string" Value="MultiImageCanvas.Image" />
+            <RegistryValue Name=".gif" Type="string" Value="MultiImageCanvas.Image" />
+            <RegistryValue Name=".webp" Type="string" Value="MultiImageCanvas.Image" />
+            <RegistryValue Name=".tif" Type="string" Value="MultiImageCanvas.Image" />
+            <RegistryValue Name=".tiff" Type="string" Value="MultiImageCanvas.Image" />
+            <RegistryValue Name=".micl" Type="string" Value="MultiImageCanvas.Canvas" />
+            <RegistryValue Name=".mics" Type="string" Value="MultiImageCanvas.Session" />
+          </RegistryKey>
+        </RegistryKey>
+
+        <RegistryKey Root="HKCU" Key="Software\Classes\MultiImageCanvas.Image" ForceDeleteOnUninstall="yes">
+          <RegistryValue Type="string" Value="Multi Image Canvas 画像" />
+          <RegistryValue Key="DefaultIcon" Type="string" Value="&quot;[INSTALLFOLDER]MultiImageCanvas.exe&quot;,0" />
+          <RegistryValue Key="shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]MultiImageCanvas.exe&quot; &quot;%1&quot;" />
+        </RegistryKey>
+        <RegistryKey Root="HKCU" Key="Software\Classes\MultiImageCanvas.Canvas" ForceDeleteOnUninstall="yes">
+          <RegistryValue Type="string" Value="Multi Image Canvas キャンバス" />
+          <RegistryValue Key="DefaultIcon" Type="string" Value="&quot;[INSTALLFOLDER]MultiImageCanvas.exe&quot;,0" />
+          <RegistryValue Key="shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]MultiImageCanvas.exe&quot; &quot;%1&quot;" />
+        </RegistryKey>
+        <RegistryKey Root="HKCU" Key="Software\Classes\MultiImageCanvas.Session" ForceDeleteOnUninstall="yes">
+          <RegistryValue Type="string" Value="Multi Image Canvas セッション" />
+          <RegistryValue Key="DefaultIcon" Type="string" Value="&quot;[INSTALLFOLDER]MultiImageCanvas.exe&quot;,0" />
+          <RegistryValue Key="shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]MultiImageCanvas.exe&quot; &quot;%1&quot;" />
+        </RegistryKey>
+
+        <!-- 「このアプリで開く」候補への追加 -->
+        <RegistryValue Root="HKCU" Key="Software\Classes\.png\OpenWithProgids" Name="MultiImageCanvas.Image" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\.jpg\OpenWithProgids" Name="MultiImageCanvas.Image" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\.jpeg\OpenWithProgids" Name="MultiImageCanvas.Image" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\.bmp\OpenWithProgids" Name="MultiImageCanvas.Image" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\.gif\OpenWithProgids" Name="MultiImageCanvas.Image" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\.webp\OpenWithProgids" Name="MultiImageCanvas.Image" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\.tif\OpenWithProgids" Name="MultiImageCanvas.Image" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\.tiff\OpenWithProgids" Name="MultiImageCanvas.Image" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\.micl\OpenWithProgids" Name="MultiImageCanvas.Canvas" Value="" Type="string" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\.mics\OpenWithProgids" Name="MultiImageCanvas.Session" Value="" Type="string" />
+      </Component>
+    </ComponentGroup>
+
+    <Icon Id="AppIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+
+    <Feature Id="Main" Title="Multi Image Canvas" Level="1">
+      <ComponentGroupRef Id="AppComponents" />
+    </Feature>
+  </Package>
+</Wix>

@@ -156,6 +156,12 @@ internal sealed partial class MainForm : Form
             ApplyTreeTheme();
             BeginInvoke(new Action(StartLoadQuickAccessExtras));
             BeginInvoke(new Action(() => _ = OpenStartupInputsAsync()));
+
+            // UI自動テスト用フック: 起動直後に設定画面を開く
+            if (Environment.GetEnvironmentVariable("MIC_OPEN_SETTINGS") == "1")
+            {
+                BeginInvoke(new Action(OpenSettings));
+            }
         };
 
         FormClosing += (_, e) =>

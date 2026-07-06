@@ -177,6 +177,21 @@ internal static class Loc
         // ビュアーモード
         ["キャンバスにて編集"] = "Edit on canvas",
         ["通常の編集画面に切り替え、この画像を新しいキャンバスに配置した状態にします。"] = "Switch to the normal editor with this image placed on a new canvas.",
+        // 設定タブ・ファイル関連付け
+        ["キー割り当て"] = "Key bindings",
+        ["ファイル関連付け"] = "File associations",
+        ["ダブルクリックまたは「変更」で編集"] = "Double-click or use Change to edit",
+        ["グローバルホットキー:\n  Ctrl+Alt+H  オーバーレイ表示/非表示\n  Ctrl+Alt+T  クリック透過\n  Ctrl+Alt+PgUp/PgDn  透過率"] = "Global hotkeys:\n  Ctrl+Alt+H  toggle overlay\n  Ctrl+Alt+T  click-through\n  Ctrl+Alt+PgUp/PgDn  opacity",
+        ["このアプリで開けるようにする拡張子を選んで「登録」を押してください。\n登録後、「Windowsの既定のアプリ設定」で Multi Image Canvas を既定に選べます。\n(登録は現在のユーザーのみ・管理者権限不要)"] = "Select the extensions to open with this app and press Register.\nAfter registering, choose Multi Image Canvas in Windows default app settings.\n(Registered for the current user only; no admin rights required)",
+        ["選択した拡張子を登録"] = "Register selected extensions",
+        ["すべて解除"] = "Unregister all",
+        ["Windowsの既定のアプリ設定を開く"] = "Open Windows default app settings",
+        ["{0} 件の拡張子を登録しました。\n既定のアプリにするには「Windowsの既定のアプリ設定を開く」から Multi Image Canvas を選択してください。"] = "Registered {0} extensions.\nTo make it the default, choose Multi Image Canvas in Windows default app settings.",
+        ["ファイル関連付けをすべて解除しました。"] = "All file associations have been removed.",
+        ["Multi Image Canvas 画像"] = "Multi Image Canvas image",
+        ["Multi Image Canvas キャンバス"] = "Multi Image Canvas canvas",
+        ["Multi Image Canvas セッション"] = "Multi Image Canvas session",
+        ["画像のオーバーレイ表示・キャンバス編集ツール"] = "Image overlay viewer and canvas editor",
     };
 
     private static readonly Dictionary<string, string> JaByEn = En
