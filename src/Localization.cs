@@ -126,6 +126,8 @@ internal static class Loc
         ["一括削除"] = "Clear all",
         ["保存"] = "Save",
         ["閉じる"] = "Close",
+        ["最大化"] = "Maximize",
+        ["最小化"] = "Minimize",
         ["新規セッション"] = "New session",
         ["アプリを閉じる"] = "Close app",
         ["アプリを閉じますか？\n外部保存していないセッションは復元できません。"] = "Close the app?\nSessions not saved externally cannot be restored.",

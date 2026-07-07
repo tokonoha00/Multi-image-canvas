@@ -4,9 +4,80 @@ using System.Windows.Forms;
 
 namespace MultiImageCanvas;
 
-// メニューバー: MenuStripは「一度開いたらカーソル移動だけで隣のメニューが開く」標準動作を持つ
+// 共通描画ヘルパー
+internal static class ThemePaint
+{
+    // コントロールの実際の背後の色を返す。
+    // 親が Color.Transparent の場合は不透明な祖先まで遡る (角丸UIの角に隙間/黒枠が出る問題の再発防止。
+    // 角を塗る際は必ず Parent.BackColor ではなくこれを使うこと)
+    public static Color GetBackdrop(Control? control)
+    {
+        var p = control?.Parent;
+        while (p != null)
+        {
+            if (p.BackColor.A == 255 && p.BackColor != Color.Transparent) return p.BackColor;
+            p = p.Parent;
+        }
+        return Theme.Current.Surface;
+    }
+}
+
+// メニューバー: MenuStripは「一度開いたらカーソル移動だけで隣のメニューが開く」標準動作を持つ。
+// また非アクティブウィンドウでも最初のクリックを食わずに処理する
 internal sealed class MenuBarStrip : MenuStrip
 {
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        // WM_MOUSEACTIVATE: MA_ACTIVATEANDEAT(2) → MA_ACTIVATE(1) に差し替え、
+        // ウィンドウ切替クリックでもそのままボタンが反応するようにする
+        if (m.Msg == 0x0021 && m.Result == (IntPtr)2) m.Result = (IntPtr)1;
+    }
+}
+
+// 非アクティブ状態からの最初のクリックを食わないToolStrip (タブバー・ビュアーバー用)
+internal class ClickThroughToolStrip : ToolStrip
+{
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        if (m.Msg == 0x0021 && m.Result == (IntPtr)2) m.Result = (IntPtr)1;
+    }
+}
+
+// Windows標準風のキャプションボタン (最小化/最大化/閉じる)。レンダラーが専用描画する
+internal enum CaptionKind { Minimize, Maximize, Close, Help }
+
+internal sealed class CaptionToolButton : ToolStripButton
+{
+    public CaptionKind Kind { get; }
+
+    // Segoe MDL2 Assets のキャプショングリフ
+    public const string GlyphMinimize = "";
+    public const string GlyphMaximize = "";
+    public const string GlyphRestore = "";
+    public const string GlyphClose = "";
+    public const string GlyphFullScreen = "";
+    public const string GlyphBackToWindow = "";
+    public const string GlyphHelp = "";
+
+    public CaptionToolButton(CaptionKind kind)
+    {
+        Kind = kind;
+        Alignment = ToolStripItemAlignment.Right;
+        Margin = Padding.Empty;
+        Padding = Padding.Empty;
+        AutoSize = false;
+        Size = new Size(46, 34);
+        Font = new Font("Segoe MDL2 Assets", 9.5f);
+        Text = kind switch
+        {
+            CaptionKind.Minimize => GlyphMinimize,
+            CaptionKind.Maximize => GlyphMaximize,
+            CaptionKind.Close => GlyphClose,
+            _ => GlyphHelp,
+        };
+    }
 }
 
 // 角丸フラットボタン。通常時は背景に溶け込み、ホバー/押下時のみ角丸で強調表示する。
@@ -39,8 +110,8 @@ internal class RoundedFlatButton : Button
         var g = pevent.Graphics;
         var t = Theme.Current;
 
-        // 背景は親と同色にして枠を見せない
-        using (var bg = new SolidBrush(Parent?.BackColor ?? t.Surface))
+        // 背景は「実際に背後にある色」で塗る (透明親でも角に隙間や黒枠を出さない)
+        using (var bg = new SolidBrush(ThemePaint.GetBackdrop(this)))
         {
             g.FillRectangle(bg, ClientRectangle);
         }
@@ -100,6 +171,23 @@ internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
     protected override void OnRenderButtonBackground(ToolStripItemRenderEventArgs e)
     {
         var g = e.Graphics;
+
+        // Windows標準風キャプションボタン: 角丸なし・全面ホバー、閉じるは赤
+        if (e.Item is CaptionToolButton caption)
+        {
+            if (e.Item.Selected || e.Item.Pressed)
+            {
+                var fill = caption.Kind == CaptionKind.Close
+                    ? (e.Item.Pressed ? Color.FromArgb(0xC4, 0x2B, 0x1C) : Color.FromArgb(0xE8, 0x11, 0x23))
+                    : (e.Item.Pressed
+                        ? Color.FromArgb(60, Theme.Current.TextPrimary)
+                        : Color.FromArgb(25, Theme.Current.TextPrimary));
+                using var capBrush = new SolidBrush(fill);
+                g.FillRectangle(capBrush, new Rectangle(Point.Empty, e.Item.Size));
+            }
+            return;
+        }
+
         var bounds = new Rectangle(2, 2, e.Item.Width - 4, e.Item.Height - 4);
         if (e.Item is SlidingToolStripButton sliding) bounds.Offset(sliding.RenderOffsetX, 0);
         var button = e.Item as ToolStripButton;
@@ -139,7 +227,15 @@ internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
         {
             e.TextRectangle = new Rectangle(e.TextRectangle.X + sliding.RenderOffsetX, e.TextRectangle.Y, e.TextRectangle.Width, e.TextRectangle.Height);
         }
-        e.TextColor = e.Item.Enabled ? Theme.Current.TextPrimary : Theme.Current.TextDisabled;
+        // 閉じるボタンのホバー中はグリフを白にする (赤背景とのコントラスト)
+        if (e.Item is CaptionToolButton { Kind: CaptionKind.Close } && (e.Item.Selected || e.Item.Pressed))
+        {
+            e.TextColor = Color.White;
+        }
+        else
+        {
+            e.TextColor = e.Item.Enabled ? Theme.Current.TextPrimary : Theme.Current.TextDisabled;
+        }
         base.OnRenderItemText(e);
     }
 
@@ -455,7 +551,7 @@ internal class GamingButton : Button
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-        var parentColor = Parent?.BackColor ?? BackColor;
+        var parentColor = ThemePaint.GetBackdrop(this);
         using (var bgBrush = new SolidBrush(parentColor))
         {
             g.FillRectangle(bgBrush, ClientRectangle);

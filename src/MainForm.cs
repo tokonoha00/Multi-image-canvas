@@ -40,7 +40,7 @@ internal sealed partial class MainForm : Form
 
     // 上部バー: ドロップダウンメニュー + キャンバスタブ
     private readonly MenuBarStrip _menuBar = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
-    private readonly ToolStrip _docTabs = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
+    private readonly ClickThroughToolStrip _docTabs = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
     private readonly List<ToolStripMenuItem> _menuButtons = [];
     private readonly Dictionary<string, ToolStripMenuItem> _actionMenuItems = [];
 
@@ -104,7 +104,7 @@ internal sealed partial class MainForm : Form
 
     // ビュアーモード (エクスプローラーから画像を開いた時の閲覧専用UI)
     private bool _viewerMode;
-    private readonly ToolStrip _viewerBar = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
+    private readonly ClickThroughToolStrip _viewerBar = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
     private ToolStripLabel? _viewerTitle;
 
     // ビュアーのGIFアニメ操作UI
@@ -117,10 +117,13 @@ internal sealed partial class MainForm : Form
     private Label? _gifFrameLabel;
     private bool _syncingGifUi;
     private readonly Panel _viewerNavPanel = new();
+    private FlowLayoutPanel? _navFlow;
+    private FlowLayoutPanel? _pageGroup;
     private Label? _viewerPageLabel;
     private Button? _viewerPrevBtn, _viewerNextBtn, _viewerFullscreenBtn;
     private readonly System.Windows.Forms.Timer _viewerChromeTimer = new() { Interval = 80 };
     private DateTime _lastViewerActivity = DateTime.UtcNow;
+    private Point _lastCursorScreenPos = Point.Empty;
     private float _viewerChromeOpacity;
     private List<string> _viewerFiles = [];
     private int _viewerFileIndex = -1;
@@ -785,16 +788,7 @@ internal sealed partial class MainForm : Form
         _menuBar.Items.Add(_overlayMenuBtn);
         _menuBar.Items.Add(BuildHelpMenu());
 
-        var closeBtn = new ToolStripButton(" ✕ ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
-        var maxBtn = new ToolStripButton(" 🗖 ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
-        var minBtn = new ToolStripButton(" ➖ ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
-        closeBtn.Click += (_, _) => Close();
-        maxBtn.Click += (_, _) => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
-        minBtn.Click += (_, _) => WindowState = FormWindowState.Minimized;
-
-        _menuBar.Items.Add(closeBtn);
-        _menuBar.Items.Add(maxBtn);
-        _menuBar.Items.Add(minBtn);
+        AddCaptionButtons(_menuBar);
         if (_naturalMi != null) _naturalMi.Checked = _canvas.InsertNaturalSize;
         if (_topmostMi != null) _topmostMi.Checked = TopMost;
         if (_overlayActiveMi != null) _overlayActiveMi.Checked = _overlayForm != null;
@@ -971,6 +965,7 @@ internal sealed partial class MainForm : Form
     {
         if (_gifPanel != null) _gifPanel.Visible = visible;
         if (_gifSpeedCombo != null) _gifSpeedCombo.Visible = visible;
+        UpdateViewerNavPanelBounds(); // 要素の増減に合わせて下部バー幅を詰め直す
     }
 
     // 再生状態・現在コマをビュアーバーのUIに反映する
@@ -1005,6 +1000,8 @@ internal sealed partial class MainForm : Form
     {
         _canvas.ReadOnlyView = true;
         _canvas.InsertNaturalSize = true; // 原寸で読み込み、全体表示でフィットさせる
+
+        MinimumSize = new Size(200, 200); // ビュアーは小さく畳めるように
 
         _menuBar.Visible = false;
         _sessionTitleLabel.Visible = false;
@@ -1045,41 +1042,66 @@ internal sealed partial class MainForm : Form
         _viewerTitle = new ToolStripLabel("") { ForeColor = Theme.Current.TextSecondary, Margin = new Padding(12, 0, 0, 0) };
         _viewerBar.Items.Add(_viewerTitle);
 
-        var closeBtn = new ToolStripButton(" ✕ ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
-        var maxBtn = new ToolStripButton(" 🗖 ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
-        var minBtn = new ToolStripButton(" ➖ ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
+        AddCaptionButtons(_viewerBar);
+    }
+
+    // Windows標準風のキャプションボタン (右端から 閉じる/最大化/最小化 の順)
+    private readonly List<CaptionToolButton> _maximizeButtons = [];
+
+    private void AddCaptionButtons(ToolStrip strip)
+    {
+        var closeBtn = new CaptionToolButton(CaptionKind.Close) { ToolTipText = Loc.T("閉じる") };
+        var maxBtn = new CaptionToolButton(CaptionKind.Maximize) { ToolTipText = Loc.T("最大化") };
+        var minBtn = new CaptionToolButton(CaptionKind.Minimize) { ToolTipText = Loc.T("最小化") };
         closeBtn.Click += (_, _) => Close();
         maxBtn.Click += (_, _) => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
         minBtn.Click += (_, _) => WindowState = FormWindowState.Minimized;
-        _viewerBar.Items.Add(closeBtn);
-        _viewerBar.Items.Add(maxBtn);
-        _viewerBar.Items.Add(minBtn);
+        strip.Items.Add(closeBtn);
+        strip.Items.Add(maxBtn);
+        strip.Items.Add(minBtn);
+        _maximizeButtons.Add(maxBtn);
     }
 
+    // 最大化状態に応じて 🗖/復元 グリフを切り替える
+    private void UpdateCaptionGlyphs()
+    {
+        var glyph = WindowState == FormWindowState.Maximized
+            ? CaptionToolButton.GlyphRestore
+            : CaptionToolButton.GlyphMaximize;
+        foreach (var btn in _maximizeButtons)
+        {
+            if (btn.Text != glyph) btn.Text = glyph;
+        }
+    }
+
+    // 下部バーは「表示中の要素の合計幅」だけのコンパクトな作りにする。
+    // GIF操作・ページ送りなどのグループは必要なときだけ表示され、その分だけ横に広がる
     private void BuildViewerNavPanel()
     {
-        _viewerNavPanel.Size = new Size(800, 52);
         _viewerNavPanel.Padding = new Padding(10, 8, 10, 8);
         _viewerNavPanel.Visible = false;
 
-        var layout = new TableLayoutPanel
+        var layout = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 3,
-            RowCount = 1,
-            BackColor = Color.Transparent,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
-
-        _gifPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
+            Location = new Point(_viewerNavPanel.Padding.Left, _viewerNavPanel.Padding.Top),
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
             BackColor = Color.Transparent,
             Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
+        _navFlow = layout;
+
+        _gifPanel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            BackColor = Color.Transparent,
+            Margin = new Padding(0, 0, 8, 0),
             Padding = Padding.Empty,
             Visible = false,
         };
@@ -1125,45 +1147,39 @@ internal sealed partial class MainForm : Form
 
         _viewerPrevBtn = ViewerNavButton("<", Loc.T("前の画像"));
         _viewerNextBtn = ViewerNavButton(">", Loc.T("次の画像"));
-        _viewerFullscreenBtn = ViewerNavButton(Loc.T("全画面"), Loc.T("全画面表示"));
+        _viewerFullscreenBtn = ViewerNavButton(CaptionToolButton.GlyphFullScreen, Loc.T("全画面表示"));
+        _viewerFullscreenBtn.Font = new Font("Segoe MDL2 Assets", 10f);
         _viewerPageLabel = new Label
         {
             AutoSize = false,
-            Width = 72,
+            Width = 60,
             Height = 34,
             TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font(Font.FontFamily, 9f, FontStyle.Bold),
             Margin = new Padding(2, 0, 2, 0),
         };
 
-        var pagePanel = new FlowLayoutPanel
+        // ページ送りグループ (複数画像のときだけ表示)
+        _pageGroup = new FlowLayoutPanel
         {
-            Anchor = AnchorStyles.None,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
             BackColor = Color.Transparent,
-            Margin = Padding.Empty,
+            Margin = new Padding(0, 0, 8, 0),
             Padding = Padding.Empty,
-            Size = new Size(136, 34),
-        };
-        var rightPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.RightToLeft,
-            WrapContents = false,
-            BackColor = Color.Transparent,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty,
+            Visible = false,
         };
 
         foreach (var button in new[] { _viewerPrevBtn, _viewerNextBtn })
         {
             button.Dock = DockStyle.None;
-            button.Size = new Size(28, 34);
+            button.Size = new Size(30, 34);
             button.Margin = new Padding(1, 0, 1, 0);
         }
         _viewerFullscreenBtn.Dock = DockStyle.None;
-        _viewerFullscreenBtn.Size = new Size(80, 34);
+        _viewerFullscreenBtn.Size = new Size(38, 34);
         _viewerFullscreenBtn.Margin = new Padding(1, 0, 1, 0);
 
         _gifPrevBtn.Click += (_, _) => _canvas.SetViewerFrame(_canvas.ViewerCurrentFrame - 1);
@@ -1194,24 +1210,14 @@ internal sealed partial class MainForm : Form
         _gifPanel.Controls.Add(_gifTrack);
         _gifPanel.Controls.Add(_gifSpeedCombo);
         _gifPanel.Controls.Add(_gifFrameLabel);
-        pagePanel.Controls.Add(_viewerPrevBtn);
-        pagePanel.Controls.Add(_viewerPageLabel);
-        pagePanel.Controls.Add(_viewerNextBtn);
-        rightPanel.Controls.Add(_viewerFullscreenBtn);
+        _pageGroup.Controls.Add(_viewerPrevBtn);
+        _pageGroup.Controls.Add(_viewerPageLabel);
+        _pageGroup.Controls.Add(_viewerNextBtn);
 
-        layout.Controls.Add(_gifPanel, 0, 0);
-        layout.Controls.Add(pagePanel, 1, 0);
-        layout.Controls.Add(rightPanel, 2, 0);
+        layout.Controls.Add(_gifPanel);
+        layout.Controls.Add(_pageGroup);
+        layout.Controls.Add(_viewerFullscreenBtn);
         _viewerNavPanel.Controls.Add(layout);
-
-        WireViewerActivity(_viewerNavPanel);
-        WireViewerActivity(layout);
-        WireViewerActivity(_gifPanel);
-        WireViewerActivity(pagePanel);
-        WireViewerActivity(rightPanel);
-        foreach (Control child in _gifPanel.Controls) WireViewerActivity(child);
-        foreach (Control child in pagePanel.Controls) WireViewerActivity(child);
-        foreach (Control child in rightPanel.Controls) WireViewerActivity(child);
 
         _viewerChromeTimer.Tick += (_, _) => UpdateViewerChrome();
         ApplyViewerNavOpacity(0f);
@@ -1232,26 +1238,40 @@ internal sealed partial class MainForm : Form
         return button;
     }
 
+    // 表示中の要素の合計幅にぴったり合わせて中央下に配置する
     private void UpdateViewerNavPanelBounds()
     {
+        if (_navFlow == null) return;
         if (_canvas.ClientSize.Width <= 0 || _canvas.ClientSize.Height <= 0) return;
-        var width = Math.Min(820, Math.Max(760, _canvas.ClientSize.Width - 48));
-        _viewerNavPanel.Size = new Size(width, 52);
-        _viewerNavPanel.Location = new Point((_canvas.ClientSize.Width - width) / 2, _canvas.ClientSize.Height - _viewerNavPanel.Height - 20);
+
+        _navFlow.PerformLayout();
+        var pref = _navFlow.PreferredSize;
+        int width = Math.Min(pref.Width + _viewerNavPanel.Padding.Horizontal, Math.Max(120, _canvas.ClientSize.Width - 24));
+        int height = Math.Max(50, pref.Height + _viewerNavPanel.Padding.Vertical);
+
+        _viewerNavPanel.Size = new Size(width, height);
+        _viewerNavPanel.Location = new Point(
+            (_canvas.ClientSize.Width - width) / 2,
+            _canvas.ClientSize.Height - height - 20);
         _viewerNavPanel.BringToFront();
     }
 
     private void UpdateViewerNavState()
     {
+        bool multi = _viewerFiles.Count > 1;
         if (_viewerPageLabel != null)
         {
             var count = Math.Max(1, _viewerFiles.Count);
             var index = _viewerFileIndex >= 0 ? _viewerFileIndex + 1 : 1;
             _viewerPageLabel.Text = $"{index} / {count}";
         }
-        if (_viewerPrevBtn != null) _viewerPrevBtn.Enabled = _viewerFiles.Count > 1;
-        if (_viewerNextBtn != null) _viewerNextBtn.Enabled = _viewerFiles.Count > 1;
-        if (_viewerFullscreenBtn != null) _viewerFullscreenBtn.Text = _viewerFullscreen ? Loc.T("解除") : Loc.T("全画面");
+        if (_pageGroup != null) _pageGroup.Visible = multi; // 1枚だけならページ送りごと隠して幅を詰める
+        if (_viewerPrevBtn != null) _viewerPrevBtn.Enabled = multi;
+        if (_viewerNextBtn != null) _viewerNextBtn.Enabled = multi;
+        if (_viewerFullscreenBtn != null)
+        {
+            _viewerFullscreenBtn.Text = _viewerFullscreen ? CaptionToolButton.GlyphBackToWindow : CaptionToolButton.GlyphFullScreen;
+        }
         SetGifControlsVisible(_canvas.ViewerFrameCount > 1);
         UpdateViewerNavPanelBounds();
     }
@@ -1260,22 +1280,12 @@ internal sealed partial class MainForm : Form
     {
         if (!_viewerMode) return;
         _lastViewerActivity = DateTime.UtcNow;
+        _lastCursorScreenPos = Cursor.Position;
         _viewerNavPanel.Visible = true;
         _viewerNavPanel.BringToFront();
         _viewerChromeOpacity = 1f;
         ApplyViewerNavOpacity(_viewerChromeOpacity);
         if (!_viewerChromeTimer.Enabled) _viewerChromeTimer.Start();
-    }
-
-    private void MarkViewerActivity()
-    {
-        if (!_viewerMode) return;
-        ShowViewerChrome();
-    }
-
-    private void WireViewerActivity(Control control)
-    {
-        control.MouseMove += (_, _) => MarkViewerActivity();
     }
 
     private void UpdateViewerChrome()
@@ -1286,7 +1296,18 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        bool pointerInside = ClientRectangle.Contains(PointToClient(Cursor.Position));
+        // グローバルカーソルの実際の移動だけを「操作あり」とみなす (擬似MouseMoveに惑わされない)
+        var cursor = Cursor.Position;
+        bool pointerInside = Bounds.Contains(cursor);
+        int dx = Math.Abs(cursor.X - _lastCursorScreenPos.X);
+        int dy = Math.Abs(cursor.Y - _lastCursorScreenPos.Y);
+        if (pointerInside && (dx > 1 || dy > 1))
+        {
+            _lastViewerActivity = DateTime.UtcNow;
+        }
+        _lastCursorScreenPos = cursor;
+
+        // ウィンドウ外に出る or 3秒間カーソルが動かない → フェードアウト
         bool active = pointerInside && (DateTime.UtcNow - _lastViewerActivity).TotalSeconds < 3;
         var step = active ? 0.25f : -0.08f;
         _viewerChromeOpacity = Math.Clamp(_viewerChromeOpacity + step, 0f, 1f);
@@ -1346,10 +1367,14 @@ internal sealed partial class MainForm : Form
         _viewerRestorePadding = Padding;
         _viewerFullscreen = true;
 
+        // ウィンドウ要素(バー・角丸・余白)をすべて排除し、画面全体に画像表示を張り付ける
         WindowState = FormWindowState.Normal;
         Padding = Padding.Empty;
+        _viewerBar.Visible = false;
         Bounds = Screen.FromControl(this).Bounds;
+        UpdateWindowRegion(); // Region解除 (角丸なし)
         UpdateViewerNavState();
+        _canvas.Focus();
     }
 
     private void ExitViewerFullscreen()
@@ -1357,8 +1382,10 @@ internal sealed partial class MainForm : Form
         if (!_viewerFullscreen) return;
         _viewerFullscreen = false;
         Padding = _viewerRestorePadding;
+        _viewerBar.Visible = true;
         WindowState = _viewerRestoreWindowState;
         if (_viewerRestoreWindowState == FormWindowState.Normal) Bounds = _viewerRestoreBounds;
+        UpdateWindowRegion();
         UpdateViewerNavState();
     }
 
@@ -1369,6 +1396,9 @@ internal sealed partial class MainForm : Form
         if (!_viewerMode) return;
         if (_viewerFullscreen) ExitViewerFullscreen();
         _viewerMode = false;
+
+        MinimumSize = new Size(1050, 650); // 編集画面の最小サイズに戻す
+        if (Width < 1050 || Height < 650) Size = new Size(Math.Max(Width, 1050), Math.Max(Height, 650));
 
         var viewerDoc = ActiveDoc;
         _viewerChromeTimer.Stop();
@@ -1588,9 +1618,16 @@ internal sealed partial class MainForm : Form
 
     private void WireTitleBarDrag(ToolStrip strip)
     {
+        // ラベル(画像名など)の上はドラッグ可能な領域として扱う
+        static bool IsDraggableSpot(ToolStrip s, Point location)
+        {
+            var item = s.GetItemAt(location);
+            return item == null || item is ToolStripLabel;
+        }
+
         strip.MouseMove += (_, e) =>
         {
-            if (strip.GetItemAt(e.Location) != null)
+            if (!IsDraggableSpot(strip, e.Location))
             {
                 strip.Cursor = Cursors.Default;
                 return;
@@ -1604,8 +1641,7 @@ internal sealed partial class MainForm : Form
             const int grip = 8;
             if (TryBeginTopResize(strip, e.Location)) return;
 
-            var item = strip.GetItemAt(e.Location);
-            if (item != null) return;
+            if (!IsDraggableSpot(strip, e.Location)) return;
 
             if (e.X < grip)
             {
@@ -1738,8 +1774,6 @@ internal sealed partial class MainForm : Form
         _viewerNavPanel.BringToFront();
 
         _canvas.SizeChanged += (_, _) => { UpdateSidebarBounds(); UpdateViewerNavPanelBounds(); };
-        WireViewerActivity(_canvas);
-        WireViewerActivity(_viewerBar);
         UpdateSidebarBounds();
     }
 
@@ -2897,6 +2931,7 @@ internal sealed partial class MainForm : Form
         base.OnSizeChanged(e);
         UpdateWindowRegion();
         PositionSessionTitle();
+        UpdateCaptionGlyphs();
     }
 
     protected override void OnShown(EventArgs e)
@@ -2907,6 +2942,13 @@ internal sealed partial class MainForm : Form
 
     private void UpdateWindowRegion()
     {
+        // 全画面表示中は角丸にせず画面全体を覆う
+        if (_viewerFullscreen)
+        {
+            Region = null;
+            UpdateSidebarBounds();
+            return;
+        }
         if (Width > 0 && Height > 0)
         {
             using var path = CreateRoundedRectPath(ClientRectangle, CornerRadius);
@@ -3286,14 +3328,14 @@ internal sealed partial class MainForm : Form
                 lv.ForeColor = t.TextPrimary;
                 break;
             case TrackBar bar:
-                bar.BackColor = root.Parent?.BackColor ?? t.Surface;
+                bar.BackColor = ThemePaint.GetBackdrop(root);
                 break;
             case CheckBox cb:
-                cb.BackColor = root.Parent?.BackColor ?? t.Surface;
+                cb.BackColor = ThemePaint.GetBackdrop(root);
                 cb.ForeColor = t.TextPrimary;
                 break;
             case Label l:
-                l.BackColor = root.Parent?.BackColor ?? t.Surface;
+                l.BackColor = ThemePaint.GetBackdrop(root);
                 l.ForeColor = t.TextPrimary;
                 break;
             case CustomScrollBar sb:
@@ -3303,7 +3345,7 @@ internal sealed partial class MainForm : Form
                 root.BackColor = t.TreeBg;
                 break;
             case Panel or FlowLayoutPanel or TableLayoutPanel:
-                root.BackColor = root.Parent is CanvasSurface ? t.Surface : (root.Parent?.BackColor ?? t.Surface);
+                root.BackColor = root.Parent is CanvasSurface ? t.Surface : ThemePaint.GetBackdrop(root);
                 break;
         }
 
@@ -3312,6 +3354,9 @@ internal sealed partial class MainForm : Form
     }
 
     // ===== 共通ヘルパー =====
+
+    // 多重呼び出しでイベントハンドラが増殖しないよう配線済みコントロールを記録する
+    private static readonly HashSet<Control> _roundedRegionWired = [];
 
     private static void ApplyRoundedRegion(Control control, int radius)
     {
@@ -3322,8 +3367,12 @@ internal sealed partial class MainForm : Form
             control.Region = new Region(path);
         }
 
-        control.HandleCreated += UpdateRegion;
-        control.SizeChanged += UpdateRegion;
+        if (_roundedRegionWired.Add(control))
+        {
+            control.HandleCreated += UpdateRegion;
+            control.SizeChanged += UpdateRegion;
+            control.Disposed += (_, _) => _roundedRegionWired.Remove(control);
+        }
 
         if (control.IsHandleCreated)
         {
