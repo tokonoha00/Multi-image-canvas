@@ -24,6 +24,7 @@ internal sealed partial class MainForm : Form
     private const int WM_HOTKEY = 0x0312;
     private const uint MOD_ALT = 0x1;
     private const uint MOD_CONTROL = 0x2;
+    private const uint MOD_SHIFT = 0x4;
     private const int HotkeyToggleOverlay = 1;
     private const int HotkeyClickThrough = 2;
     private const int HotkeyOpacityDown = 3;
@@ -1598,11 +1599,11 @@ internal sealed partial class MainForm : Form
     {
         var menu = MakeMenuButton(Loc.T("オーバーレイ"));
 
-        _overlayActiveMi = new ToolStripMenuItem("🔲 " + Loc.T("オーバーレイ有効化")) { CheckOnClick = true, ShortcutKeyDisplayString = "Ctrl+Alt+H" };
+        _overlayActiveMi = new ToolStripMenuItem("🔲 " + Loc.T("オーバーレイ有効化")) { CheckOnClick = true, ShortcutKeyDisplayString = _keyMap.GetDisplay("overlay.toggle") };
         _overlayActiveMi.Click += (_, _) => ToggleOverlayMode(_overlayActiveMi.Checked);
         menu.DropDownItems.Add(_overlayActiveMi);
 
-        _clickThroughMi = new ToolStripMenuItem("🖱 " + Loc.T("クリック透過")) { CheckOnClick = true, ShortcutKeyDisplayString = "Ctrl+Alt+T" };
+        _clickThroughMi = new ToolStripMenuItem("🖱 " + Loc.T("クリック透過")) { CheckOnClick = true, ShortcutKeyDisplayString = _keyMap.GetDisplay("overlay.clickThrough") };
         _clickThroughMi.Click += (_, _) => SetOverlayClickThrough(_clickThroughMi.Checked);
         menu.DropDownItems.Add(_clickThroughMi);
 
@@ -1611,7 +1612,7 @@ internal sealed partial class MainForm : Form
         _opacityMenuLabel = new ToolStripLabel($"{Loc.T("オーバーレイ透過率")}: {(int)(_overlayOpacity * 100)}%")
         {
             ForeColor = Theme.Current.TextSecondary,
-            ToolTipText = "Ctrl+Alt+PgUp / PgDn",
+            ToolTipText = $"{_keyMap.GetDisplay("overlay.opacityUp")} / {_keyMap.GetDisplay("overlay.opacityDown")}",
         };
         _opacityTrack = new ToolStripTrackBar(20, 100, (int)(_overlayOpacity * 100));
         _opacityTrack.TrackBar.Width = 180;
@@ -1631,6 +1632,9 @@ internal sealed partial class MainForm : Form
         {
             mi.ShortcutKeyDisplayString = _keyMap.GetDisplay(actionId);
         }
+        if (_overlayActiveMi != null) _overlayActiveMi.ShortcutKeyDisplayString = _keyMap.GetDisplay("overlay.toggle");
+        if (_clickThroughMi != null) _clickThroughMi.ShortcutKeyDisplayString = _keyMap.GetDisplay("overlay.clickThrough");
+        if (_opacityMenuLabel != null) _opacityMenuLabel.ToolTipText = $"{_keyMap.GetDisplay("overlay.opacityUp")} / {_keyMap.GetDisplay("overlay.opacityDown")}";
     }
 
     private void WireTitleBarDrag(ToolStrip strip)
@@ -1757,6 +1761,7 @@ internal sealed partial class MainForm : Form
         Theme.Apply(dlg.SelectedTheme);
         ApplyLanguageToControls();
         UpdateMenuShortcutTexts();
+        ReregisterGlobalHotkeys();
         SaveSettings();
     }
 
@@ -2194,20 +2199,24 @@ internal sealed partial class MainForm : Form
         int margin = 12;
         int overlayHeight = 64;
         int gap = 12;
+        int clientWidth = Math.Max(1, _canvas.ClientSize.Width);
+        int clientHeight = Math.Max(1, _canvas.ClientSize.Height);
+        int panelWidth = Math.Min(_sidebarWidth, Math.Max(120, clientWidth - margin * 2));
+        int rightX = Math.Clamp(clientWidth - margin - panelWidth, margin, Math.Max(margin, clientWidth - panelWidth));
 
-        int rightX = _canvas.ClientSize.Width - margin - _sidebarWidth;
-
-        _overlayFrame.Size = new Size(_sidebarWidth, overlayHeight);
-        _overlayFrame.Location = new Point(rightX, _canvas.ClientSize.Height - margin - overlayHeight);
+        _overlayFrame.Size = new Size(panelWidth, overlayHeight);
+        _overlayFrame.Location = new Point(rightX, Math.Max(margin, clientHeight - margin - overlayHeight));
 
         int rightTop = margin;
-        int rightHeight = _overlayFrame.Top - gap - rightTop;
-        _rightPanel.Size = new Size(_sidebarWidth, Math.Max(100, rightHeight));
+        int rightHeight = Math.Max(40, _overlayFrame.Top - gap - rightTop);
+        _rightPanel.Size = new Size(panelWidth, rightHeight);
         _rightPanel.Location = new Point(rightX, rightTop);
 
         // オーバーレイ設定パネルはファイル選択画面の下部に重ねる
-        _overlaySettingsPanel.Size = new Size(_sidebarWidth, OverlaySettingsHeight);
-        _overlaySettingsPanel.Location = new Point(rightX, _overlayFrame.Top - gap - OverlaySettingsHeight);
+        int settingsHeight = Math.Min(OverlaySettingsHeight, Math.Max(60, clientHeight - margin * 2));
+        int settingsY = Math.Clamp(_overlayFrame.Top - gap - settingsHeight, margin, Math.Max(margin, clientHeight - margin - settingsHeight));
+        _overlaySettingsPanel.Size = new Size(panelWidth, settingsHeight);
+        _overlaySettingsPanel.Location = new Point(rightX, settingsY);
 
         UpdateItemPanelPosition();
     }
@@ -2920,15 +2929,33 @@ internal sealed partial class MainForm : Form
     {
         base.OnHandleCreated(e);
         UpdateWindowRegion();
-        RegisterHotKey(Handle, HotkeyToggleOverlay, MOD_CONTROL | MOD_ALT, (uint)Keys.H);
-        RegisterHotKey(Handle, HotkeyClickThrough, MOD_CONTROL | MOD_ALT, (uint)Keys.T);
-        RegisterHotKey(Handle, HotkeyOpacityDown, MOD_CONTROL | MOD_ALT, (uint)Keys.Next);
-        RegisterHotKey(Handle, HotkeyOpacityUp, MOD_CONTROL | MOD_ALT, (uint)Keys.Prior);
-        RegisterHotKey(Handle, HotkeyCanvasNext, MOD_CONTROL | MOD_ALT, (uint)Keys.Right);
-        RegisterHotKey(Handle, HotkeyCanvasPrev, MOD_CONTROL | MOD_ALT, (uint)Keys.Left);
+        RegisterGlobalHotkeys();
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
+    {
+        UnregisterGlobalHotkeys();
+        base.OnHandleDestroyed(e);
+    }
+
+    private void ReregisterGlobalHotkeys()
+    {
+        if (!IsHandleCreated) return;
+        UnregisterGlobalHotkeys();
+        RegisterGlobalHotkeys();
+    }
+
+    private void RegisterGlobalHotkeys()
+    {
+        RegisterConfiguredHotKey(HotkeyToggleOverlay, "overlay.toggle");
+        RegisterConfiguredHotKey(HotkeyClickThrough, "overlay.clickThrough");
+        RegisterConfiguredHotKey(HotkeyOpacityDown, "overlay.opacityDown");
+        RegisterConfiguredHotKey(HotkeyOpacityUp, "overlay.opacityUp");
+        RegisterConfiguredHotKey(HotkeyCanvasNext, "tab.next");
+        RegisterConfiguredHotKey(HotkeyCanvasPrev, "tab.prev");
+    }
+
+    private void UnregisterGlobalHotkeys()
     {
         UnregisterHotKey(Handle, HotkeyToggleOverlay);
         UnregisterHotKey(Handle, HotkeyClickThrough);
@@ -2936,7 +2963,19 @@ internal sealed partial class MainForm : Form
         UnregisterHotKey(Handle, HotkeyOpacityUp);
         UnregisterHotKey(Handle, HotkeyCanvasNext);
         UnregisterHotKey(Handle, HotkeyCanvasPrev);
-        base.OnHandleDestroyed(e);
+    }
+
+    private void RegisterConfiguredHotKey(int id, string actionId)
+    {
+        var keys = _keyMap.Get(actionId);
+        var keyCode = keys & Keys.KeyCode;
+        if (keys == Keys.None || keyCode == Keys.None) return;
+
+        uint modifiers = 0;
+        if ((keys & Keys.Control) != 0) modifiers |= MOD_CONTROL;
+        if ((keys & Keys.Alt) != 0) modifiers |= MOD_ALT;
+        if ((keys & Keys.Shift) != 0) modifiers |= MOD_SHIFT;
+        RegisterHotKey(Handle, id, modifiers, (uint)keyCode);
     }
 
     // ===== ウィンドウ枠 =====
@@ -3129,6 +3168,10 @@ internal sealed partial class MainForm : Form
             case "view.zoomIn": _canvas.SetZoom(_canvas.Zoom * 1.15f); break;
             case "view.zoomOut": _canvas.SetZoom(_canvas.Zoom / 1.15f); break;
             case "view.hideUi": HideUi(); break;
+            case "overlay.toggle": ToggleOverlayMode(_overlayForm == null); break;
+            case "overlay.clickThrough": SetOverlayClickThrough(!_overlayClickThrough); break;
+            case "overlay.opacityUp": SetOverlayOpacity(_overlayOpacity + 0.1f); break;
+            case "overlay.opacityDown": SetOverlayOpacity(_overlayOpacity - 0.1f); break;
             case "help.shortcuts": ShowHelp(); break;
         }
     }

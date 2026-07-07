@@ -40,6 +40,10 @@ internal sealed class KeyMap
         new("view.zoomIn", "表示", "ズームイン", Keys.Control | Keys.Oemplus),
         new("view.zoomOut", "表示", "ズームアウト", Keys.Control | Keys.OemMinus),
         new("view.hideUi", "表示", "UI非表示", Keys.F11),
+        new("overlay.toggle", "オーバーレイ", "オーバーレイ表示/非表示", Keys.Control | Keys.Alt | Keys.H),
+        new("overlay.clickThrough", "オーバーレイ", "クリック透過", Keys.Control | Keys.Alt | Keys.T),
+        new("overlay.opacityUp", "オーバーレイ", "オーバーレイ不透明度を上げる", Keys.Control | Keys.Alt | Keys.Prior),
+        new("overlay.opacityDown", "オーバーレイ", "オーバーレイ不透明度を下げる", Keys.Control | Keys.Alt | Keys.Next),
         new("help.shortcuts", "ヘルプ", "ショートカット一覧", Keys.F1),
     ];
 

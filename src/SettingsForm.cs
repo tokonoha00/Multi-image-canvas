@@ -30,6 +30,7 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox _languageCombo = new();
     private readonly ComboBox _animCombo = new();
     private readonly CheckedListBox _assocList = new();
+    private Label? _overlayHotkeyHint;
     private Button? _applyBtn;
 
     private readonly ListBox _nav = new();
@@ -364,9 +365,9 @@ internal sealed class SettingsForm : Form
         foreach (var name in OverlayAnimations.Names) _animCombo.Items.Add(Loc.T(name));
         _animCombo.SelectedItem = Loc.T(_appliedOverlayAnimation);
 
-        var hotkeyHint = new Label
+        _overlayHotkeyHint = new Label
         {
-            Text = Loc.T("グローバルホットキー:\n  Ctrl+Alt+H  オーバーレイ表示/非表示\n  Ctrl+Alt+T  クリック透過\n  Ctrl+Alt+PgUp/PgDn  透過率"),
+            Text = BuildOverlayHotkeyHint(),
             AutoSize = true,
             Location = new Point(8, 64),
             ForeColor = t.TextSecondary,
@@ -374,8 +375,22 @@ internal sealed class SettingsForm : Form
 
         page.Controls.Add(animLabel);
         page.Controls.Add(_animCombo);
-        page.Controls.Add(hotkeyHint);
+        page.Controls.Add(_overlayHotkeyHint);
         return page;
+    }
+
+    private string BuildOverlayHotkeyHint() => string.Join(Environment.NewLine,
+    [
+        Loc.T("グローバルホットキー:"),
+        $"  {KeyMap.ToDisplay(_editedKeys["overlay.toggle"])}  {Loc.T("オーバーレイ表示/非表示")}",
+        $"  {KeyMap.ToDisplay(_editedKeys["overlay.clickThrough"])}  {Loc.T("クリック透過")}",
+        $"  {KeyMap.ToDisplay(_editedKeys["overlay.opacityUp"])}  {Loc.T("オーバーレイ不透明度を上げる")}",
+        $"  {KeyMap.ToDisplay(_editedKeys["overlay.opacityDown"])}  {Loc.T("オーバーレイ不透明度を下げる")}",
+    ]);
+
+    private void UpdateOverlayHotkeyHint()
+    {
+        if (_overlayHotkeyHint != null) _overlayHotkeyHint.Text = BuildOverlayHotkeyHint();
     }
 
     private Panel BuildAssociationPage(Theme t)
@@ -519,6 +534,7 @@ internal sealed class SettingsForm : Form
             _keyList.Items.Add(item);
         }
         _keyList.EndUpdate();
+        UpdateOverlayHotkeyHint();
     }
 
     private string? SelectedId => _keyList.SelectedItems.Count > 0 ? _keyList.SelectedItems[0].Tag as string : null;

@@ -51,8 +51,6 @@ internal sealed class LayerPanel : Panel
         buttonRow.Controls.Add(MakeButton("⏬", "最背面へ", (_, _) => { var i = SelectedItem(); if (i != null) _canvas.ReorderItem(i, -1, true); }));
         buttonRow.Controls.Add(MakeButton("🗑", "削除", (_, _) => { var i = SelectedItem(); if (i != null) _canvas.DeleteItem(i); }));
 
-        // 下部: 不透明度スライダー
-        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 56, BackColor = Theme.Current.TreeBg, Padding = new Padding(8, 2, 8, 2) };
         _opacityLabel.Text = "不透明度: -";
         _opacityLabel.Dock = DockStyle.Top;
         _opacityLabel.Height = 18;
@@ -72,12 +70,8 @@ internal sealed class LayerPanel : Panel
             _opacityLabel.Text = $"不透明度: {_opacity.Value}%";
         };
 
-        bottom.Controls.Add(_opacity);
-        bottom.Controls.Add(_opacityLabel);
-
         Controls.Add(_list);
         Controls.Add(buttonRow);
-        Controls.Add(bottom);
 
         _canvas.SelectionChanged += (_, _) => SyncSelectionFromCanvas();
     }
