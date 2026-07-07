@@ -161,11 +161,27 @@ tools/              検証スクリプト
 - キー割り当ての変更・テーマ・各種設定もセッションに保存
 - レイアウトファイル: 任意の場所に `.micl`（JSON）
 
-## 注意事項 / 権利表示
+## ライセンス / License
 
-- 本アプリは画像の表示・配置・共有用ファイル作成をローカルで行います。URLから画像を開く場合のみ、指定URLへHTTP(S)アクセスして画像を取得します。
-- 他者が権利を持つ画像、ゲーム画面、イラスト等を利用・共有する場合は、各コンテンツの利用規約・著作権・配信/投稿ルールに従ってください。
-- `.mics` 共有ファイルには画像データを同梱できます。配布前に、同梱してよい画像か確認してください。
-- フルスクリーン排他モードのゲーム上にはオーバーレイ表示できません。ゲーム側をボーダレスウィンドウ等にしてください。
-- 第三者コンポーネントの表示は `THIRD_PARTY_NOTICES.md` を参照してください。
-- このリポジトリ自体のソースコード利用ライセンスは、現時点では明示していません。再配布・改変利用の条件を公開する場合は、別途 `LICENSE` を追加してください。
+### ソースコードのライセンス
+本プロジェクトのソースコードは MIT License で公開しています。詳細は [LICENSE](./LICENSE) を参照してください。
+
+This project is licensed under the MIT License. See [LICENSE](./LICENSE) for details.
+
+### ブランド・素材について
+ソースコードは MIT License で利用できますが、アプリ名（「Multi Image Canvas」）、ロゴ、アイコン、宣伝画像、スクリーンショット等のブランド素材は、明示がない限り自由利用の対象ではありません。公式版と誤認される形での名称・ロゴの使用は避けてください。
+
+The application name, logo, icon, promotional images, screenshots, and other brand assets are not automatically licensed for reuse unless explicitly stated otherwise. Please do not use them in a way that suggests an official or endorsed fork.
+
+### ユーザーコンテンツについて
+本アプリは、ユーザーが読み込んだ画像・作成したレイアウト・共有ファイルに対して権利を主張しません。画像込み共有を行う場合、共有者自身が画像の利用権・配布権を確認し、自己の責任において行ってください。
+
+This application does not claim any rights to images, layouts, or files created or imported by users. Users are responsible for ensuring that they have the right to use and share any images included in exported layout packages.
+
+## その他の権利・ポリシー
+
+- プライバシーポリシー（ネットワーク通信なし、共有ファイルの仕様等）については [PRIVACY.md](./PRIVACY.md) を参照してください。
+- 貢献方法やPull Requestのルールについては [CONTRIBUTING.md](./CONTRIBUTING.md) を参照してください。
+- セキュリティ脆弱性の報告方法については [SECURITY.md](./SECURITY.md) を参照してください。
+- 第三者コンポーネントの表示は [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) を参照してください。
+
