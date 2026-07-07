@@ -165,6 +165,8 @@ internal sealed class CanvasSurface : Control
 
     private void StartAnimationIfNeeded(CanvasItem item)
     {
+        // ビュアーモードは自前タイマー駆動 (再生/停止・コマ送り制御のため) なのでImageAnimatorは使わない
+        if (ReadOnlyView) return;
         if (!item.IsAnimated || _animating.Contains(item.Image)) return;
         _animating.Add(item.Image);
         ImageAnimator.Animate(item.Image, OnFrameChanged);
@@ -177,6 +179,152 @@ internal sealed class CanvasSurface : Control
     }
 
     private void OnFrameChanged(object? sender, EventArgs e) => Invalidate();
+
+    // ===== ビュアーのGIFアニメ制御 (自前タイマー駆動でフレーム番号を常に把握する) =====
+
+    private readonly System.Windows.Forms.Timer _viewerAnimTimer = new();
+    private int _viewerFrame;
+    private int[] _viewerFrameDelays = [];
+
+    public int ViewerFrameCount { get; private set; }
+    public int ViewerCurrentFrame => _viewerFrame;
+    public bool ViewerAnimationPlaying { get; private set; }
+
+    // フレーム移動・再生状態の変化を通知 (ビュアーバーのUI同期用)
+    public event EventHandler? ViewerFrameChanged;
+
+    // ビュアーで画像を読み込んだ後に呼ぶ。アニメ画像があれば自動再生を開始する
+    public void InitViewerAnimation()
+    {
+        _viewerAnimTimer.Stop();
+        _viewerAnimTimer.Tick -= ViewerAnimTimer_Tick;
+        ViewerFrameCount = 0;
+        _viewerFrame = 0;
+        ViewerAnimationPlaying = false;
+
+        var primary = _doc?.Items.FirstOrDefault(i => i.IsAnimated);
+        if (primary == null)
+        {
+            ViewerFrameChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        try
+        {
+            ViewerFrameCount = primary.Image.GetFrameCount(System.Drawing.Imaging.FrameDimension.Time);
+        }
+        catch
+        {
+            ViewerFrameCount = 0;
+        }
+        if (ViewerFrameCount <= 1)
+        {
+            ViewerFrameChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        _viewerFrameDelays = ReadGifFrameDelays(primary.Image, ViewerFrameCount);
+        ApplyViewerFrame(0);
+
+        _viewerAnimTimer.Tick += ViewerAnimTimer_Tick;
+        SetViewerAnimationPlaying(true);
+    }
+
+    // 編集モードへ切り替える際に呼ぶ。自前駆動をやめてImageAnimatorへ戻す
+    public void ShutdownViewerAnimation()
+    {
+        _viewerAnimTimer.Stop();
+        _viewerAnimTimer.Tick -= ViewerAnimTimer_Tick;
+        ViewerAnimationPlaying = false;
+        ViewerFrameCount = 0;
+        if (_doc != null)
+        {
+            foreach (var item in _doc.Items) StartAnimationIfNeeded(item);
+        }
+    }
+
+    public void SetViewerAnimationPlaying(bool play)
+    {
+        if (ViewerFrameCount <= 1) return;
+        ViewerAnimationPlaying = play;
+        if (play)
+        {
+            _viewerAnimTimer.Interval = CurrentViewerDelay();
+            _viewerAnimTimer.Start();
+        }
+        else
+        {
+            _viewerAnimTimer.Stop();
+        }
+        ViewerFrameChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    // 指定コマを表示する。既定では再生を停止してそのコマに留まる
+    public void SetViewerFrame(int index, bool pausePlayback = true)
+    {
+        if (ViewerFrameCount <= 1) return;
+        if (pausePlayback && ViewerAnimationPlaying)
+        {
+            ViewerAnimationPlaying = false;
+            _viewerAnimTimer.Stop();
+        }
+
+        // 端で折り返す (最終コマの次は先頭へ)
+        int wrapped = ((index % ViewerFrameCount) + ViewerFrameCount) % ViewerFrameCount;
+        ApplyViewerFrame(wrapped);
+        ViewerFrameChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ViewerAnimTimer_Tick(object? sender, EventArgs e)
+    {
+        if (ViewerFrameCount <= 1) return;
+        ApplyViewerFrame((_viewerFrame + 1) % ViewerFrameCount);
+        _viewerAnimTimer.Interval = CurrentViewerDelay();
+        ViewerFrameChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private int CurrentViewerDelay() =>
+        _viewerFrameDelays.Length > 0 ? _viewerFrameDelays[_viewerFrame % _viewerFrameDelays.Length] : 100;
+
+    private void ApplyViewerFrame(int index)
+    {
+        _viewerFrame = index;
+        if (_doc == null) return;
+        foreach (var item in _doc.Items.Where(i => i.IsAnimated))
+        {
+            try
+            {
+                int count = item.Image.GetFrameCount(System.Drawing.Imaging.FrameDimension.Time);
+                item.Image.SelectActiveFrame(System.Drawing.Imaging.FrameDimension.Time, Math.Min(index, count - 1));
+            }
+            catch
+            {
+                // フレーム切替に失敗した画像は現状維持
+            }
+        }
+        Invalidate();
+    }
+
+    // GIFの各コマの表示時間(ms)。PropertyTagFrameDelay(0x5100)は1/100秒単位
+    private static int[] ReadGifFrameDelays(Image image, int frameCount)
+    {
+        var delays = new int[frameCount];
+        try
+        {
+            var prop = image.GetPropertyItem(0x5100);
+            for (int i = 0; i < frameCount; i++)
+            {
+                int offset = (i * 4) % Math.Max(4, prop!.Value!.Length);
+                int ms = BitConverter.ToInt32(prop.Value, offset) * 10;
+                delays[i] = Math.Max(20, ms);
+            }
+        }
+        catch
+        {
+            for (int i = 0; i < frameCount; i++) delays[i] = 100;
+        }
+        return delays;
+    }
 
     // ===== 座標変換・ビュー操作 =====
 
@@ -1489,7 +1637,8 @@ internal sealed class CanvasSurface : Control
         foreach (var item in _doc.Items)
         {
             if (!item.Visible) continue;
-            if (item.IsAnimated) ImageAnimator.UpdateFrames(item.Image);
+            // ビュアーはSelectActiveFrameで直接コマを切り替えるためUpdateFramesしない
+            if (item.IsAnimated && !ReadOnlyView) ImageAnimator.UpdateFrames(item.Image);
 
             using var attrs = CreateAttributes(item);
             g.DrawImage(item.Image, item.GetDrawPoints(), item.Crop, GraphicsUnit.Pixel, attrs);
@@ -1762,6 +1911,7 @@ internal sealed class CanvasSurface : Control
         if (disposing)
         {
             StopAllAnimations();
+            _viewerAnimTimer.Dispose();
         }
         base.Dispose(disposing);
     }

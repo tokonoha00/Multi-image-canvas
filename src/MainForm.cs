@@ -107,6 +107,15 @@ internal sealed partial class MainForm : Form
     private readonly ToolStrip _viewerBar = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
     private ToolStripLabel? _viewerTitle;
 
+    // ビュアーのGIFアニメ操作UI
+    private ToolStripSeparator? _gifSep;
+    private ToolStripButton? _gifPrevBtn;
+    private ToolStripButton? _gifPlayBtn;
+    private ToolStripButton? _gifNextBtn;
+    private ToolStripTrackBar? _gifTrack;
+    private ToolStripLabel? _gifFrameLabel;
+    private bool _syncingGifUi;
+
     private const int CornerRadius = 14;
 
     public MainForm(string[]? startupArgs = null)
@@ -868,6 +877,41 @@ internal sealed partial class MainForm : Form
             // このフィット表示がビュアーのズーム下限(=100%)になる
             _canvas.Select(null);
             _canvas.SetViewerBaseline();
+
+            // GIFアニメなら操作UIを表示して自動再生
+            _canvas.InitViewerAnimation();
+            SetGifControlsVisible(_canvas.ViewerFrameCount > 1);
+            SyncGifControls();
+        }
+    }
+
+    private void SetGifControlsVisible(bool visible)
+    {
+        foreach (var item in new ToolStripItem?[] { _gifSep, _gifPrevBtn, _gifPlayBtn, _gifNextBtn, _gifTrack, _gifFrameLabel })
+        {
+            if (item != null) item.Visible = visible;
+        }
+    }
+
+    // 再生状態・現在コマをビュアーバーのUIに反映する
+    private void SyncGifControls()
+    {
+        if (_gifPlayBtn == null || _gifTrack == null || _gifFrameLabel == null) return;
+        int count = _canvas.ViewerFrameCount;
+        if (count <= 1) return;
+
+        _syncingGifUi = true;
+        try
+        {
+            _gifPlayBtn.Text = _canvas.ViewerAnimationPlaying ? " ⏸ " : " ▶ ";
+            if (_gifTrack.TrackBar.Maximum != count - 1) _gifTrack.TrackBar.Maximum = count - 1;
+            var frame = Math.Clamp(_canvas.ViewerCurrentFrame, 0, count - 1);
+            if (_gifTrack.TrackBar.Value != frame) _gifTrack.TrackBar.Value = frame;
+            _gifFrameLabel.Text = $"{frame + 1} / {count}";
+        }
+        finally
+        {
+            _syncingGifUi = false;
         }
     }
 
@@ -916,6 +960,33 @@ internal sealed partial class MainForm : Form
         _viewerTitle = new ToolStripLabel("") { ForeColor = Theme.Current.TextSecondary, Margin = new Padding(12, 0, 0, 0) };
         _viewerBar.Items.Add(_viewerTitle);
 
+        // GIFアニメ操作 (アニメ画像を開いたときのみ表示)
+        _gifSep = new ToolStripSeparator();
+        _gifPrevBtn = new ToolStripButton(" ⏮ ") { Margin = new Padding(2, 2, 0, 2), ToolTipText = Loc.T("前のコマ") };
+        _gifPlayBtn = new ToolStripButton(" ⏸ ") { Margin = new Padding(0, 2, 0, 2), ToolTipText = Loc.T("再生 / 停止") };
+        _gifNextBtn = new ToolStripButton(" ⏭ ") { Margin = new Padding(0, 2, 2, 2), ToolTipText = Loc.T("次のコマ") };
+        _gifTrack = new ToolStripTrackBar(0, 1, 0);
+        _gifTrack.TrackBar.Width = 180;
+        _gifFrameLabel = new ToolStripLabel("") { ForeColor = Theme.Current.TextSecondary };
+
+        _gifPrevBtn.Click += (_, _) => _canvas.SetViewerFrame(_canvas.ViewerCurrentFrame - 1);
+        _gifNextBtn.Click += (_, _) => _canvas.SetViewerFrame(_canvas.ViewerCurrentFrame + 1);
+        _gifPlayBtn.Click += (_, _) => _canvas.SetViewerAnimationPlaying(!_canvas.ViewerAnimationPlaying);
+        _gifTrack.TrackBar.Scroll += (_, _) =>
+        {
+            if (_syncingGifUi) return;
+            _canvas.SetViewerFrame(_gifTrack.TrackBar.Value);
+        };
+        _canvas.ViewerFrameChanged += (_, _) => SyncGifControls();
+
+        _viewerBar.Items.Add(_gifSep);
+        _viewerBar.Items.Add(_gifPrevBtn);
+        _viewerBar.Items.Add(_gifPlayBtn);
+        _viewerBar.Items.Add(_gifNextBtn);
+        _viewerBar.Items.Add(_gifTrack);
+        _viewerBar.Items.Add(_gifFrameLabel);
+        SetGifControlsVisible(false);
+
         var closeBtn = new ToolStripButton(" ✕ ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
         var maxBtn = new ToolStripButton(" 🗖 ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
         var minBtn = new ToolStripButton(" ➖ ") { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(4, 2, 4, 2) };
@@ -935,7 +1006,9 @@ internal sealed partial class MainForm : Form
         _viewerMode = false;
 
         var viewerDoc = ActiveDoc;
+        SetGifControlsVisible(false);
         _canvas.ReadOnlyView = false;
+        _canvas.ShutdownViewerAnimation(); // 自前駆動をやめてImageAnimatorへ戻す
 
         // ビュアー起動中はセッションを読み書きしていないため、ここで前回タブを復元する
         var s = SessionStore.Load();

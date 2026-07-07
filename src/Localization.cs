@@ -175,6 +175,9 @@ internal static class Loc
         ["セッションファイルのエントリ数が多すぎます。"] = "The session file contains too many entries.",
         ["セッションファイルの展開サイズが上限を超えています。"] = "The session file exceeds the extraction size limit.",
         // ビュアーモード
+        ["前のコマ"] = "Previous frame",
+        ["次のコマ"] = "Next frame",
+        ["再生 / 停止"] = "Play / Pause",
         ["キャンバスにて編集"] = "Edit on canvas",
         ["通常の編集画面に切り替え、この画像を新しいキャンバスに配置した状態にします。"] = "Switch to the normal editor with this image placed on a new canvas.",
         // 設定タブ・ファイル関連付け
