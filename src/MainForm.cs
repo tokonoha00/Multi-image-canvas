@@ -3356,8 +3356,9 @@ internal sealed partial class MainForm : Form
 
     private void ShowAbout()
     {
+        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
         MessageBox.Show(this,
-            $"Multi Image Canvas\n{Loc.T("バージョン情報")}: {Loc.T("リリース前")}",
+            $"Multi Image Canvas\n{Loc.T("バージョン情報")}: {version}",
             Loc.T("バージョン情報"),
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
