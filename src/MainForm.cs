@@ -1793,9 +1793,10 @@ internal sealed partial class MainForm : Form
         Controls.Add(_menuBar);
         BuildViewerBar();
         Controls.Add(_viewerBar);
-        Controls.SetChildIndex(_viewerBar, 0);
-        Controls.SetChildIndex(_docTabs, 1);
-        Controls.SetChildIndex(_menuBar, 2);
+        Controls.SetChildIndex(_canvas, 0);
+        Controls.SetChildIndex(_viewerBar, 1);
+        Controls.SetChildIndex(_docTabs, 2);
+        Controls.SetChildIndex(_menuBar, 3);
         BuildSessionTitleLabel();
 
         _rightPanel.BringToFront();
@@ -1811,6 +1812,7 @@ internal sealed partial class MainForm : Form
     {
         _rightPanel.Padding = new Padding(12);
         _rightPanel.BackColor = Theme.Current.Surface;
+        _rightPanel.AutoScroll = true;
 
         // タイトル行 + 表示切替ボタン
         var titlePanel = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = Theme.Current.Surface };

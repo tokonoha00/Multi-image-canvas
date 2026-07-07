@@ -59,6 +59,7 @@ internal static class ImageDecoder
 
         // 静止画はビットマップに複製してストリームを解放
         var cloned = new Bitmap(img);
+        FixTransparentRgb(cloned);
         img.Dispose();
         ms.Dispose();
         return cloned;
@@ -85,7 +86,66 @@ internal static class ImageDecoder
         {
             bmp.UnlockBits(data);
         }
+        FixTransparentRgb(bmp);
         return bmp;
+    }
+
+    // 透明/低アルファピクセルのRGBが緑などのキー色のままだと、拡大縮小の補間で境界に色がにじむ。
+    // アルファは変えず、境界付近のRGBだけ近傍の見える色へ寄せる。
+    private static void FixTransparentRgb(Bitmap bmp)
+    {
+        if (!Image.IsAlphaPixelFormat(bmp.PixelFormat)) return;
+        const byte AlphaThreshold = 24;
+        var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+        var data = bmp.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+        try
+        {
+            int stride = Math.Abs(data.Stride);
+            byte[] pixels = new byte[stride * bmp.Height];
+            System.Runtime.InteropServices.Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
+
+            bool changed;
+            for (int pass = 0; pass < 4; pass++)
+            {
+                changed = false;
+                for (int y = 0; y < bmp.Height; y++)
+                {
+                    int row = y * stride;
+                    for (int x = 0; x < bmp.Width; x++)
+                    {
+                        int offset = row + x * 4;
+                        if (pixels[offset + 3] > AlphaThreshold) continue;
+
+                        int b = 0, g = 0, r = 0, count = 0;
+                        for (int yy = Math.Max(0, y - 1); yy <= Math.Min(bmp.Height - 1, y + 1); yy++)
+                        {
+                            int nrow = yy * stride;
+                            for (int xx = Math.Max(0, x - 1); xx <= Math.Min(bmp.Width - 1, x + 1); xx++)
+                            {
+                                if (xx == x && yy == y) continue;
+                                int n = nrow + xx * 4;
+                                if (pixels[n + 3] <= AlphaThreshold) continue;
+                                b += pixels[n];
+                                g += pixels[n + 1];
+                                r += pixels[n + 2];
+                                count++;
+                            }
+                        }
+                        if (count == 0) continue;
+                        pixels[offset] = (byte)(b / count);
+                        pixels[offset + 1] = (byte)(g / count);
+                        pixels[offset + 2] = (byte)(r / count);
+                        changed = true;
+                    }
+                }
+                if (!changed) break;
+            }
+            System.Runtime.InteropServices.Marshal.Copy(pixels, 0, data.Scan0, pixels.Length);
+        }
+        finally
+        {
+            bmp.UnlockBits(data);
+        }
     }
 
     // 読み込み失敗・ファイル欠落時のプレースホルダ画像
