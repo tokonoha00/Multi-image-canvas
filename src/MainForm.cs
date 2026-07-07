@@ -130,6 +130,9 @@ internal sealed partial class MainForm : Form
     private int _viewerFileIndex = -1;
     private string? _viewerCurrentPath;
     private bool _viewerFullscreen;
+    private readonly object _viewerPreloadLock = new();
+    private readonly Dictionary<string, Task<Image>> _viewerPreloads = new(StringComparer.OrdinalIgnoreCase);
+    private int _viewerOpenVersion;
     private Rectangle _viewerRestoreBounds;
     private FormWindowState _viewerRestoreWindowState;
     private Padding _viewerRestorePadding;
@@ -899,7 +902,7 @@ internal sealed partial class MainForm : Form
             var first = _startupArgs.Select(a => a.Trim().Trim('"')).FirstOrDefault(File.Exists);
             if (first == null) return;
             InitViewerFileList(first);
-            OpenViewerFile(first);
+            await OpenViewerFileAsync(first, ++_viewerOpenVersion);
             ShowViewerChrome();
             return;
         }
@@ -941,23 +944,39 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private void OpenViewerFile(string path)
+    private async Task OpenViewerFileAsync(string path, int version)
     {
         if (!_viewerMode) return;
 
-        CanvasDocument? disposeLater = null;
-        _canvas.ShutdownViewerAnimation();
-        if (ActiveDoc is { } oldDoc)
+        Image image;
+        try
         {
-            _canvas.Document = null;
-            _docs.Remove(oldDoc);
-            disposeLater = oldDoc;
-            _activeDocIndex = -1;
+            image = await GetViewerImageAsync(path);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, Loc.T("画像を読み込めません"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
         }
 
-        var doc = new CanvasDocument(Path.GetFileNameWithoutExtension(path));
-        AddDocument(doc, select: true, save: false);
-        _canvas.AddImage(path);
+        if (version != _viewerOpenVersion)
+        {
+            image.Dispose();
+            return;
+        }
+
+        List<Image> disposeLater;
+        _canvas.ShutdownViewerAnimation();
+        if (ActiveDoc is not { } doc)
+        {
+            doc = new CanvasDocument(Path.GetFileNameWithoutExtension(path));
+            AddDocument(doc, select: true, save: false);
+        }
+        else
+        {
+            doc.Name = Path.GetFileNameWithoutExtension(path);
+        }
+        disposeLater = _canvas.ReplaceViewerImage(image, path);
         _canvas.Select(null);
         _canvas.SetViewerBaseline();
         _canvas.InitViewerAnimation();
@@ -968,24 +987,86 @@ internal sealed partial class MainForm : Form
         if (_viewerTitle != null) _viewerTitle.Text = Path.GetFileName(path);
         Text = Path.GetFileName(path) + " - Multi Image Canvas";
         UpdateViewerNavState();
-        if (disposeLater != null) DisposeViewerDocumentLater(disposeLater);
+        DisposeViewerImagesLater(disposeLater);
+        QueueViewerPreloads();
     }
 
-    private static void DisposeViewerDocumentLater(CanvasDocument doc)
+    private static void DisposeViewerImagesLater(List<Image> images)
     {
+        if (images.Count == 0) return;
         System.Threading.ThreadPool.QueueUserWorkItem(static state =>
         {
-            try { ((CanvasDocument)state!).Dispose(); }
+            try
+            {
+                foreach (var image in (List<Image>)state!) image.Dispose();
+            }
             catch { /* viewer navigation should not be interrupted by cleanup failure */ }
-        }, doc);
+        }, images);
     }
 
-    private void NavigateViewerImage(int delta)
+    private async void NavigateViewerImage(int delta)
     {
         if (!_viewerMode || _viewerFiles.Count == 0) return;
         _viewerFileIndex = (_viewerFileIndex + delta + _viewerFiles.Count) % _viewerFiles.Count;
-        OpenViewerFile(_viewerFiles[_viewerFileIndex]);
+        await OpenViewerFileAsync(_viewerFiles[_viewerFileIndex], ++_viewerOpenVersion);
         ShowViewerChrome();
+    }
+
+    private Task<Image> GetViewerImageAsync(string path)
+    {
+        lock (_viewerPreloadLock)
+        {
+            if (_viewerPreloads.Remove(path, out var preloaded)) return preloaded;
+        }
+        return Task.Run(() => ImageDecoder.Decode(path));
+    }
+
+    private void QueueViewerPreloads()
+    {
+        if (!_viewerMode || _viewerFiles.Count <= 1 || _viewerFileIndex < 0) return;
+
+        var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        targets.Add(_viewerFiles[(_viewerFileIndex - 1 + _viewerFiles.Count) % _viewerFiles.Count]);
+        targets.Add(_viewerFiles[(_viewerFileIndex + 1) % _viewerFiles.Count]);
+        if (_viewerCurrentPath != null) targets.Add(_viewerCurrentPath);
+
+        lock (_viewerPreloadLock)
+        {
+            foreach (var key in _viewerPreloads.Keys.ToList())
+            {
+                if (targets.Contains(key)) continue;
+                var task = _viewerPreloads[key];
+                _viewerPreloads.Remove(key);
+                DisposeViewerPreloadWhenDone(task);
+            }
+
+            foreach (var target in targets)
+            {
+                if (string.Equals(target, _viewerCurrentPath, StringComparison.OrdinalIgnoreCase)) continue;
+                if (_viewerPreloads.ContainsKey(target)) continue;
+                _viewerPreloads[target] = Task.Run(() => ImageDecoder.Decode(target));
+            }
+        }
+    }
+
+    private void ClearViewerPreloads()
+    {
+        List<Task<Image>> tasks;
+        lock (_viewerPreloadLock)
+        {
+            tasks = _viewerPreloads.Values.ToList();
+            _viewerPreloads.Clear();
+        }
+        foreach (var task in tasks) DisposeViewerPreloadWhenDone(task);
+    }
+
+    private static void DisposeViewerPreloadWhenDone(Task<Image> task)
+    {
+        task.ContinueWith(static t =>
+        {
+            if (t.Status == TaskStatus.RanToCompletion) t.Result.Dispose();
+            else _ = t.Exception;
+        }, TaskContinuationOptions.ExecuteSynchronously);
     }
 
     private void SetGifControlsVisible(bool visible)
@@ -1444,6 +1525,7 @@ internal sealed partial class MainForm : Form
         if (!_viewerMode) return;
         if (_viewerFullscreen) ExitViewerFullscreen();
         _viewerMode = false;
+        ClearViewerPreloads();
 
         MinimumSize = new Size(1050, 650); // 編集画面の最小サイズに戻す
         if (Width < 1050 || Height < 650) Size = new Size(Math.Max(Width, 1050), Math.Max(Height, 650));

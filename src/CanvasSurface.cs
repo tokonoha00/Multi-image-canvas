@@ -543,18 +543,64 @@ internal sealed class CanvasSurface : Control
     {
         if (_doc == null) return;
         Image image;
-        bool animated = false;
         try
         {
             image = ImageDecoder.Decode(path);
-            animated = ImageAnimator.CanAnimate(image);
         }
         catch (Exception ex)
         {
             MessageBox.Show(FindForm(), ex.Message, Loc.T("画像を読み込めません"), MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
+        AddImage(image, path);
+    }
+
+    public void AddImage(Image image, string path)
+    {
+        if (_doc == null)
+        {
+            image.Dispose();
+            return;
+        }
         _doc.RegisterImage(image);
+        var item = CreateImageItem(image, path);
+        _doc.Items.Add(item);
+        _doc.Undo.Push(new AddItemsCommand(_doc, [item]));
+        StartAnimationIfNeeded(item);
+        Select(item);
+        _doc.NotifyChanged();
+    }
+
+    public List<Image> ReplaceViewerImage(Image image, string path)
+    {
+        var oldImages = new List<Image>();
+        if (_doc == null)
+        {
+            image.Dispose();
+            return oldImages;
+        }
+
+        StopAllAnimations();
+        foreach (var old in _doc.Items.Select(i => i.Image).Distinct().ToList())
+        {
+            if (_doc.UnregisterImage(old)) oldImages.Add(old);
+        }
+        _doc.Items.Clear();
+        _doc.Strokes.Clear();
+        _doc.Undo.Clear();
+        _selected = null;
+
+        _doc.RegisterImage(image);
+        _doc.Items.Add(CreateImageItem(image, path));
+        _doc.Dirty = false;
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
+        Invalidate();
+        return oldImages;
+    }
+
+    private CanvasItem CreateImageItem(Image image, string path)
+    {
+        bool animated = ImageAnimator.CanAnimate(image);
 
         float ratio = image.Width / (float)image.Height;
         float width, height;
@@ -584,12 +630,7 @@ internal sealed class CanvasSurface : Control
             Crop = new RectangleF(0, 0, image.Width, image.Height),
             IsAnimated = animated,
         };
-
-        _doc.Items.Add(item);
-        _doc.Undo.Push(new AddItemsCommand(_doc, [item]));
-        StartAnimationIfNeeded(item);
-        Select(item);
-        _doc.NotifyChanged();
+        return item;
     }
 
     public void DuplicateSelected()

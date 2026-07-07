@@ -145,6 +145,8 @@ internal sealed class CanvasDocument : IDisposable
 
     public void RegisterImage(Image image) => _ownedImages.Add(image);
 
+    public bool UnregisterImage(Image image) => _ownedImages.Remove(image);
+
     public void Dispose()
     {
         foreach (var img in _ownedImages)
