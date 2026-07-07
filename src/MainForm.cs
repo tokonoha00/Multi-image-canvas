@@ -1244,9 +1244,22 @@ internal sealed partial class MainForm : Form
         if (_navFlow == null) return;
         if (_canvas.ClientSize.Width <= 0 || _canvas.ClientSize.Height <= 0) return;
 
+        int availableWidth = Math.Max(120, _canvas.ClientSize.Width - 24);
+        _navFlow.WrapContents = false;
+        _navFlow.MaximumSize = Size.Empty;
         _navFlow.PerformLayout();
         var pref = _navFlow.PreferredSize;
-        int width = Math.Min(pref.Width + _viewerNavPanel.Padding.Horizontal, Math.Max(120, _canvas.ClientSize.Width - 24));
+
+        int contentMaxWidth = Math.Max(1, availableWidth - _viewerNavPanel.Padding.Horizontal);
+        if (pref.Width > contentMaxWidth)
+        {
+            _navFlow.WrapContents = true;
+            _navFlow.MaximumSize = new Size(contentMaxWidth, 0);
+            _navFlow.PerformLayout();
+            pref = _navFlow.PreferredSize;
+        }
+
+        int width = Math.Min(pref.Width + _viewerNavPanel.Padding.Horizontal, availableWidth);
         int height = Math.Max(50, pref.Height + _viewerNavPanel.Padding.Vertical);
 
         _viewerNavPanel.Size = new Size(width, height);
