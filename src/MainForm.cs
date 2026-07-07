@@ -945,12 +945,13 @@ internal sealed partial class MainForm : Form
     {
         if (!_viewerMode) return;
 
+        CanvasDocument? disposeLater = null;
         _canvas.ShutdownViewerAnimation();
         if (ActiveDoc is { } oldDoc)
         {
             _canvas.Document = null;
             _docs.Remove(oldDoc);
-            oldDoc.Dispose();
+            disposeLater = oldDoc;
             _activeDocIndex = -1;
         }
 
@@ -967,6 +968,16 @@ internal sealed partial class MainForm : Form
         if (_viewerTitle != null) _viewerTitle.Text = Path.GetFileName(path);
         Text = Path.GetFileName(path) + " - Multi Image Canvas";
         UpdateViewerNavState();
+        if (disposeLater != null) DisposeViewerDocumentLater(disposeLater);
+    }
+
+    private static void DisposeViewerDocumentLater(CanvasDocument doc)
+    {
+        System.Threading.ThreadPool.QueueUserWorkItem(static state =>
+        {
+            try { ((CanvasDocument)state!).Dispose(); }
+            catch { /* viewer navigation should not be interrupted by cleanup failure */ }
+        }, doc);
     }
 
     private void NavigateViewerImage(int delta)
