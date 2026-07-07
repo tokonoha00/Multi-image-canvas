@@ -52,7 +52,7 @@ internal sealed partial class MainForm : Form
     private ToolStripLabel? _opacityMenuLabel;
     private readonly ToolStripLabel _zoomText = new("100%") { Alignment = ToolStripItemAlignment.Right };
     private ToolStripButton? _zoomInBtn, _zoomOutBtn, _zoomFitBtn;
-    private ToolStripButton? _paintRedBtn, _paintMarkerBtn, _paintEraserBtn, _paintClearBtn;
+    private ToolStripButton? _paintSelectBtn, _paintRedBtn, _paintMarkerBtn, _paintEraserBtn, _paintClearBtn;
     private readonly Label _sessionTitleLabel = new();
     private readonly string[] _startupArgs;
     private static readonly HttpClient Http = new();
@@ -476,6 +476,7 @@ internal sealed partial class MainForm : Form
         _zoomInBtn ??= MakeDocTabButton(" ＋ ", Loc.T("ズームイン"), (_, _) => _canvas.SetZoom(_canvas.Zoom * 1.15f));
         _zoomOutBtn ??= MakeDocTabButton(" － ", Loc.T("ズームアウト"), (_, _) => _canvas.SetZoom(_canvas.Zoom / 1.15f));
         _zoomFitBtn ??= MakeDocTabButton(" 🗺 ", Loc.T("全体表示"), (_, _) => _canvas.ZoomFitAll());
+        _paintSelectBtn ??= MakePaintButton(PaintIconKind.Select, Loc.T("画像選択"), (_, _) => SetPaintTool(PaintTool.None));
         _paintRedBtn ??= MakePaintButton(PaintIconKind.Pen, Loc.T("赤ペン"), (_, _) => TogglePaintTool(PaintTool.RedPen));
         _paintMarkerBtn ??= MakePaintButton(PaintIconKind.Marker, Loc.T("黄色マーカー"), (_, _) => TogglePaintTool(PaintTool.YellowMarker));
         _paintEraserBtn ??= MakePaintButton(PaintIconKind.Eraser, Loc.T("消しゴム"), (_, _) => TogglePaintTool(PaintTool.Eraser));
@@ -489,6 +490,7 @@ internal sealed partial class MainForm : Form
         _docTabs.Items.Add(_paintEraserBtn);
         _docTabs.Items.Add(_paintMarkerBtn);
         _docTabs.Items.Add(_paintRedBtn);
+        _docTabs.Items.Add(_paintSelectBtn);
         UpdatePaintButtons();
 
         _docTabs.ResumeLayout();
@@ -496,12 +498,18 @@ internal sealed partial class MainForm : Form
 
     private void TogglePaintTool(PaintTool tool)
     {
-        _canvas.PaintTool = _canvas.PaintTool == tool ? PaintTool.None : tool;
+        SetPaintTool(_canvas.PaintTool == tool ? PaintTool.None : tool);
+    }
+
+    private void SetPaintTool(PaintTool tool)
+    {
+        _canvas.PaintTool = tool;
         UpdatePaintButtons();
     }
 
     private void UpdatePaintButtons()
     {
+        if (_paintSelectBtn != null) _paintSelectBtn.Checked = _canvas.PaintTool == PaintTool.None;
         if (_paintRedBtn != null) _paintRedBtn.Checked = _canvas.PaintTool == PaintTool.RedPen;
         if (_paintMarkerBtn != null) _paintMarkerBtn.Checked = _canvas.PaintTool == PaintTool.YellowMarker;
         if (_paintEraserBtn != null) _paintEraserBtn.Checked = _canvas.PaintTool == PaintTool.Eraser;
@@ -573,6 +581,7 @@ internal sealed partial class MainForm : Form
 
     private enum PaintIconKind
     {
+        Select,
         Pen,
         Marker,
         Eraser,
@@ -593,6 +602,12 @@ internal sealed partial class MainForm : Form
 
         switch (icon)
         {
+            case PaintIconKind.Select:
+                using (var dash = new Pen(fg, 1.8f) { DashStyle = DashStyle.Dash, DashCap = DashCap.Round })
+                {
+                    g.DrawRectangle(dash, 4, 4, 12, 12);
+                }
+                break;
             case PaintIconKind.Pen:
                 g.DrawLine(redPen, 5, 15, 15, 5);
                 using (var brush = new SolidBrush(Color.FromArgb(230, 32, 32)))
@@ -632,7 +647,7 @@ internal sealed partial class MainForm : Form
 
     private void RefreshPaintButtonImages()
     {
-        foreach (var btn in new[] { _paintRedBtn, _paintMarkerBtn, _paintEraserBtn, _paintClearBtn })
+        foreach (var btn in new[] { _paintSelectBtn, _paintRedBtn, _paintMarkerBtn, _paintEraserBtn, _paintClearBtn })
         {
             if (btn?.Tag is not PaintIconKind icon) continue;
             var old = btn.Image;

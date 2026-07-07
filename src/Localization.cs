@@ -64,6 +64,7 @@ internal static class Loc
         ["フォルダツリー"] = "Folder tree",
         ["サムネイル一覧"] = "Thumbnails",
         ["レイヤー"] = "Layers",
+        ["画像選択"] = "Select images",
         ["赤ペン"] = "Red pen",
         ["黄色マーカー"] = "Yellow marker",
         ["消しゴム"] = "Eraser",
