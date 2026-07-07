@@ -1040,6 +1040,10 @@ internal sealed partial class MainForm : Form
         _viewerBar.Items.Add(editBtn);
 
         _viewerTitle = new ToolStripLabel("") { ForeColor = Theme.Current.TextSecondary, Margin = new Padding(12, 0, 0, 0) };
+        _viewerTitle.MouseDown += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left) BeginWindowMove();
+        };
         _viewerBar.Items.Add(_viewerTitle);
 
         AddCaptionButtons(_viewerBar);
@@ -1669,9 +1673,14 @@ internal sealed partial class MainForm : Form
                 return;
             }
 
-            ReleaseCapture();
-            SendMessage(Handle, 0xA1, 0x2, 0); // HTCAPTION: ウィンドウドラッグ
+            BeginWindowMove();
         };
+    }
+
+    private void BeginWindowMove()
+    {
+        ReleaseCapture();
+        SendMessage(Handle, 0xA1, 0x2, 0); // HTCAPTION: ウィンドウドラッグ
     }
 
     private Cursor GetTitleBarCursor(Control control, Point localPoint)
@@ -1779,6 +1788,9 @@ internal sealed partial class MainForm : Form
         Controls.Add(_menuBar);
         BuildViewerBar();
         Controls.Add(_viewerBar);
+        Controls.SetChildIndex(_viewerBar, 0);
+        Controls.SetChildIndex(_docTabs, 1);
+        Controls.SetChildIndex(_menuBar, 2);
         BuildSessionTitleLabel();
 
         _rightPanel.BringToFront();
@@ -1966,19 +1978,19 @@ internal sealed partial class MainForm : Form
         // 操作が終わると CanvasUpdated 経由で再表示される
         bool visible = !_viewerMode && !_canvas.ReadOnlyView && _canvas.Selected != null && !_uiHidden && !_canvas.IsInteracting;
 
+        if (visible) UpdateItemPanelPosition();
         if (_itemPanel.Visible != visible)
         {
             _itemPanel.Visible = visible;
             if (visible) _itemPanel.BringToFront();
         }
-        if (visible) UpdateItemPanelPosition();
     }
 
     // 選択画像の右横 (入らなければ左横) に追従配置する
     private void UpdateItemPanelPosition()
     {
         var sel = _canvas.Selected;
-        if (sel == null || !_itemPanel.Visible) return;
+        if (sel == null) return;
 
         var world = sel.GetWorldBounds();
         var zoom = _canvas.Zoom;
@@ -2006,7 +2018,7 @@ internal sealed partial class MainForm : Form
         {
             _itemPanel.Location = location;
             _itemPanel.BringToFront();
-            _itemPanel.Update();
+            _itemPanel.Invalidate();
         }
     }
 
