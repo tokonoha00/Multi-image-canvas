@@ -116,6 +116,19 @@ internal sealed partial class MainForm : Form
     private ToolStripComboBox? _gifSpeedCombo;
     private ToolStripLabel? _gifFrameLabel;
     private bool _syncingGifUi;
+    private readonly Panel _viewerNavPanel = new();
+    private Label? _viewerPageLabel;
+    private Button? _viewerPrevBtn, _viewerNextBtn, _viewerFullscreenBtn;
+    private readonly System.Windows.Forms.Timer _viewerChromeTimer = new() { Interval = 80 };
+    private DateTime _lastViewerActivity = DateTime.UtcNow;
+    private float _viewerChromeOpacity;
+    private List<string> _viewerFiles = [];
+    private int _viewerFileIndex = -1;
+    private string? _viewerCurrentPath;
+    private bool _viewerFullscreen;
+    private Rectangle _viewerRestoreBounds;
+    private FormWindowState _viewerRestoreWindowState;
+    private Padding _viewerRestorePadding;
 
     private const int CornerRadius = 14;
 
@@ -334,14 +347,14 @@ internal sealed partial class MainForm : Form
         UpdateItemPanel();
     }
 
-    private void AddDocument(CanvasDocument doc, bool select)
+    private void AddDocument(CanvasDocument doc, bool select, bool save = true)
     {
         _docs.Add(doc);
         doc.Changed += (_, _) => { RebuildDocTabs(); SyncMenuState(); UpdateItemPanel(); };
         doc.Undo.StateChanged += (_, _) => SyncMenuState();
         RebuildDocTabs();
         if (select) SelectDocument(_docs.Count - 1);
-        if (IsHandleCreated) SaveSession();
+        if (save && IsHandleCreated) SaveSession();
     }
 
     private void SelectDocument(int index)
@@ -871,19 +884,87 @@ internal sealed partial class MainForm : Form
 
     private async Task OpenStartupInputsAsync()
     {
-        await OpenInputsAsync(_startupArgs);
         if (_viewerMode)
         {
-            // ウィンドウいっぱいに表示 (選択ハンドル等は出さない)。
-            // このフィット表示がビュアーのズーム下限(=100%)になる
-            _canvas.Select(null);
-            _canvas.SetViewerBaseline();
-
-            // GIFアニメなら操作UIを表示して自動再生
-            _canvas.InitViewerAnimation();
-            SetGifControlsVisible(_canvas.ViewerFrameCount > 1);
-            SyncGifControls();
+            var first = _startupArgs.Select(a => a.Trim().Trim('"')).FirstOrDefault(File.Exists);
+            if (first == null) return;
+            InitViewerFileList(first);
+            OpenViewerFile(first);
+            ShowViewerChrome();
+            return;
         }
+
+        await OpenInputsAsync(_startupArgs);
+    }
+
+    private void InitViewerFileList(string path)
+    {
+        _viewerCurrentPath = path;
+        _viewerFiles = [];
+        _viewerFileIndex = -1;
+
+        var dir = Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+        {
+            _viewerFiles.Add(path);
+            _viewerFileIndex = 0;
+            return;
+        }
+
+        try
+        {
+            _viewerFiles = Directory.EnumerateFiles(dir)
+                .Where(ImageDecoder.IsSupported)
+                .OrderBy(Path.GetFileName, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+            _viewerFileIndex = _viewerFiles.FindIndex(f => string.Equals(f, path, StringComparison.OrdinalIgnoreCase));
+            if (_viewerFileIndex < 0)
+            {
+                _viewerFiles.Insert(0, path);
+                _viewerFileIndex = 0;
+            }
+        }
+        catch
+        {
+            _viewerFiles = [path];
+            _viewerFileIndex = 0;
+        }
+    }
+
+    private void OpenViewerFile(string path)
+    {
+        if (!_viewerMode) return;
+
+        _canvas.ShutdownViewerAnimation();
+        if (ActiveDoc is { } oldDoc)
+        {
+            _canvas.Document = null;
+            _docs.Remove(oldDoc);
+            oldDoc.Dispose();
+            _activeDocIndex = -1;
+        }
+
+        var doc = new CanvasDocument(Path.GetFileNameWithoutExtension(path));
+        AddDocument(doc, select: true, save: false);
+        _canvas.AddImage(path);
+        _canvas.Select(null);
+        _canvas.SetViewerBaseline();
+        _canvas.InitViewerAnimation();
+        SetGifControlsVisible(_canvas.ViewerFrameCount > 1);
+        SyncGifControls();
+
+        _viewerCurrentPath = path;
+        if (_viewerTitle != null) _viewerTitle.Text = Path.GetFileName(path);
+        Text = Path.GetFileName(path) + " - Multi Image Canvas";
+        UpdateViewerNavState();
+    }
+
+    private void NavigateViewerImage(int delta)
+    {
+        if (!_viewerMode || _viewerFiles.Count == 0) return;
+        _viewerFileIndex = (_viewerFileIndex + delta + _viewerFiles.Count) % _viewerFiles.Count;
+        OpenViewerFile(_viewerFiles[_viewerFileIndex]);
+        ShowViewerChrome();
     }
 
     private void SetGifControlsVisible(bool visible)
@@ -930,8 +1011,8 @@ internal sealed partial class MainForm : Form
         _rightPanel.Visible = false;
         _overlayFrame.Visible = false;
         _viewerBar.Visible = true;
-
-        AddDocument(new CanvasDocument(), select: true);
+        _viewerNavPanel.Visible = false;
+        _viewerChromeTimer.Start();
 
         var first = _startupArgs.Select(a => a.Trim().Trim('"')).FirstOrDefault(File.Exists);
         if (first != null)
@@ -1019,14 +1100,204 @@ internal sealed partial class MainForm : Form
         _viewerBar.Items.Add(minBtn);
     }
 
+    private void BuildViewerNavPanel()
+    {
+        _viewerNavPanel.Size = new Size(420, 52);
+        _viewerNavPanel.Padding = new Padding(12, 8, 12, 8);
+        _viewerNavPanel.Visible = false;
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 1,
+            BackColor = Color.Transparent,
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+
+        _viewerPrevBtn = ViewerNavButton("<", Loc.T("前の画像"));
+        _viewerNextBtn = ViewerNavButton(">", Loc.T("次の画像"));
+        _viewerFullscreenBtn = ViewerNavButton(Loc.T("全画面"), Loc.T("全画面表示"));
+        _viewerPageLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font(Font.FontFamily, 9f, FontStyle.Bold),
+        };
+
+        _viewerPrevBtn.Click += (_, _) => NavigateViewerImage(-1);
+        _viewerNextBtn.Click += (_, _) => NavigateViewerImage(+1);
+        _viewerFullscreenBtn.Click += (_, _) => ToggleViewerFullscreen();
+
+        layout.Controls.Add(_viewerPrevBtn, 0, 0);
+        layout.Controls.Add(_viewerPageLabel, 1, 0);
+        layout.Controls.Add(_viewerNextBtn, 2, 0);
+        layout.Controls.Add(_viewerFullscreenBtn, 3, 0);
+        _viewerNavPanel.Controls.Add(layout);
+
+        WireViewerActivity(_viewerNavPanel);
+        WireViewerActivity(layout);
+        foreach (Control child in layout.Controls) WireViewerActivity(child);
+
+        _viewerChromeTimer.Tick += (_, _) => UpdateViewerChrome();
+        ApplyViewerNavOpacity(0f);
+    }
+
+    private Button ViewerNavButton(string text, string tooltip)
+    {
+        var button = new RoundedFlatButton
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(4, 0, 4, 0),
+            CornerRadius = 8,
+            FlatStyle = FlatStyle.Flat,
+        };
+        button.FlatAppearance.BorderSize = 0;
+        new ToolTip().SetToolTip(button, tooltip);
+        return button;
+    }
+
+    private void UpdateViewerNavPanelBounds()
+    {
+        if (_canvas.ClientSize.Width <= 0 || _canvas.ClientSize.Height <= 0) return;
+        var width = Math.Min(480, Math.Max(320, _canvas.ClientSize.Width - 48));
+        _viewerNavPanel.Size = new Size(width, 52);
+        _viewerNavPanel.Location = new Point((_canvas.ClientSize.Width - width) / 2, _canvas.ClientSize.Height - _viewerNavPanel.Height - 20);
+        _viewerNavPanel.BringToFront();
+    }
+
+    private void UpdateViewerNavState()
+    {
+        if (_viewerPageLabel != null)
+        {
+            var count = Math.Max(1, _viewerFiles.Count);
+            var index = _viewerFileIndex >= 0 ? _viewerFileIndex + 1 : 1;
+            _viewerPageLabel.Text = $"{index} / {count}";
+        }
+        if (_viewerPrevBtn != null) _viewerPrevBtn.Enabled = _viewerFiles.Count > 1;
+        if (_viewerNextBtn != null) _viewerNextBtn.Enabled = _viewerFiles.Count > 1;
+        if (_viewerFullscreenBtn != null) _viewerFullscreenBtn.Text = _viewerFullscreen ? Loc.T("解除") : Loc.T("全画面");
+        UpdateViewerNavPanelBounds();
+    }
+
+    private void ShowViewerChrome()
+    {
+        if (!_viewerMode) return;
+        _lastViewerActivity = DateTime.UtcNow;
+        _viewerNavPanel.Visible = true;
+        _viewerNavPanel.BringToFront();
+        _viewerChromeOpacity = 1f;
+        ApplyViewerNavOpacity(_viewerChromeOpacity);
+        if (!_viewerChromeTimer.Enabled) _viewerChromeTimer.Start();
+    }
+
+    private void MarkViewerActivity()
+    {
+        if (!_viewerMode) return;
+        ShowViewerChrome();
+    }
+
+    private void WireViewerActivity(Control control)
+    {
+        control.MouseMove += (_, _) => MarkViewerActivity();
+        control.MouseEnter += (_, _) => MarkViewerActivity();
+    }
+
+    private void UpdateViewerChrome()
+    {
+        if (!_viewerMode)
+        {
+            _viewerNavPanel.Visible = false;
+            return;
+        }
+
+        bool pointerInside = ClientRectangle.Contains(PointToClient(Cursor.Position));
+        bool active = pointerInside && (DateTime.UtcNow - _lastViewerActivity).TotalSeconds < 3;
+        var step = active ? 0.25f : -0.08f;
+        _viewerChromeOpacity = Math.Clamp(_viewerChromeOpacity + step, 0f, 1f);
+        ApplyViewerNavOpacity(_viewerChromeOpacity);
+        _viewerNavPanel.Visible = _viewerChromeOpacity > 0f;
+    }
+
+    private void ApplyViewerNavOpacity(float opacity)
+    {
+        var t = Theme.Current;
+        _viewerNavPanel.BackColor = Blend(t.CanvasBg, t.Surface, opacity * 0.95f);
+        ApplyRoundedRegion(_viewerNavPanel, 12);
+
+        var fore = Blend(t.CanvasBg, t.TextPrimary, opacity);
+        foreach (Control c in _viewerNavPanel.Controls)
+        {
+            ApplyViewerNavControlOpacity(c, opacity, fore);
+        }
+    }
+
+    private void ApplyViewerNavControlOpacity(Control control, float opacity, Color fore)
+    {
+        control.ForeColor = fore;
+        if (control is RoundedFlatButton btn)
+        {
+            btn.BaseColor = Blend(Theme.Current.CanvasBg, Theme.Current.ButtonBg, opacity);
+        }
+        foreach (Control child in control.Controls) ApplyViewerNavControlOpacity(child, opacity, fore);
+    }
+
+    private static Color Blend(Color from, Color to, float amount)
+    {
+        amount = Math.Clamp(amount, 0f, 1f);
+        return Color.FromArgb(
+            (int)(from.R + (to.R - from.R) * amount),
+            (int)(from.G + (to.G - from.G) * amount),
+            (int)(from.B + (to.B - from.B) * amount));
+    }
+
+    private void ToggleViewerFullscreen()
+    {
+        if (!_viewerMode) return;
+        if (_viewerFullscreen) ExitViewerFullscreen();
+        else EnterViewerFullscreen();
+        ShowViewerChrome();
+    }
+
+    private void EnterViewerFullscreen()
+    {
+        if (_viewerFullscreen) return;
+        _viewerRestoreBounds = Bounds;
+        _viewerRestoreWindowState = WindowState;
+        _viewerRestorePadding = Padding;
+        _viewerFullscreen = true;
+
+        WindowState = FormWindowState.Normal;
+        Padding = Padding.Empty;
+        Bounds = Screen.FromControl(this).Bounds;
+        UpdateViewerNavState();
+    }
+
+    private void ExitViewerFullscreen()
+    {
+        if (!_viewerFullscreen) return;
+        _viewerFullscreen = false;
+        Padding = _viewerRestorePadding;
+        WindowState = _viewerRestoreWindowState;
+        if (_viewerRestoreWindowState == FormWindowState.Normal) Bounds = _viewerRestoreBounds;
+        UpdateViewerNavState();
+    }
+
     // ビュアー → 通常の編集画面へ。前回セッションのタブを復元した上で、
     // 表示中の画像が載った新しいキャンバスを末尾に追加して選択する
     private void SwitchToEditorFromViewer()
     {
         if (!_viewerMode) return;
+        if (_viewerFullscreen) ExitViewerFullscreen();
         _viewerMode = false;
 
         var viewerDoc = ActiveDoc;
+        _viewerChromeTimer.Stop();
+        _viewerNavPanel.Visible = false;
         SetGifControlsVisible(false);
         _canvas.ReadOnlyView = false;
         _canvas.ShutdownViewerAnimation(); // 自前駆動をやめてImageAnimatorへ戻す
@@ -1242,7 +1513,15 @@ internal sealed partial class MainForm : Form
 
     private void WireTitleBarDrag(ToolStrip strip)
     {
-        strip.MouseMove += (_, e) => strip.Cursor = GetTitleBarCursor(strip, e.Location);
+        strip.MouseMove += (_, e) =>
+        {
+            if (strip.GetItemAt(e.Location) != null)
+            {
+                strip.Cursor = Cursors.Default;
+                return;
+            }
+            strip.Cursor = GetTitleBarCursor(strip, e.Location);
+        };
         strip.MouseLeave += (_, _) => strip.Cursor = Cursors.Default;
         strip.MouseDown += (s, e) =>
         {
@@ -1357,16 +1636,19 @@ internal sealed partial class MainForm : Form
         BuildRightPanel();
         BuildItemPanel();
         BuildOverlayFrame();
+        BuildViewerNavPanel();
 
         _canvas.Controls.Add(_rightPanel);
         _canvas.Controls.Add(_itemPanel);
         _canvas.Controls.Add(_overlaySettingsPanel);
         _canvas.Controls.Add(_overlayFrame);
+        _canvas.Controls.Add(_viewerNavPanel);
 
         ApplyRoundedRegion(_rightPanel, CornerRadius + 4);
         ApplyRoundedRegion(_itemPanel, CornerRadius + 4);
         ApplyRoundedRegion(_overlaySettingsPanel, CornerRadius + 4);
         ApplyRoundedRegion(_overlayFrame, CornerRadius + 4);
+        ApplyRoundedRegion(_viewerNavPanel, 12);
 
         Controls.Add(_canvas);
         Controls.Add(_docTabs);
@@ -1378,8 +1660,11 @@ internal sealed partial class MainForm : Form
         _rightPanel.BringToFront();
         _itemPanel.BringToFront();
         _overlayFrame.BringToFront();
+        _viewerNavPanel.BringToFront();
 
-        _canvas.SizeChanged += (_, _) => UpdateSidebarBounds();
+        _canvas.SizeChanged += (_, _) => { UpdateSidebarBounds(); UpdateViewerNavPanelBounds(); };
+        WireViewerActivity(_canvas);
+        WireViewerActivity(_viewerBar);
         UpdateSidebarBounds();
     }
 
@@ -2619,6 +2904,29 @@ internal sealed partial class MainForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (_viewerMode)
+        {
+            switch (keyData & Keys.KeyCode)
+            {
+                case Keys.Left:
+                case Keys.Up:
+                    NavigateViewerImage(-1);
+                    return true;
+                case Keys.Right:
+                case Keys.Down:
+                    NavigateViewerImage(+1);
+                    return true;
+                case Keys.Escape:
+                    if (_viewerFullscreen)
+                    {
+                        ExitViewerFullscreen();
+                        ShowViewerChrome();
+                        return true;
+                    }
+                    break;
+            }
+        }
+
         // パス欄などテキスト編集中は標準の編集キーを妨げない
         bool textEditing = ActiveControl is TextBoxBase || _pathBox.Focused;
         if (textEditing)

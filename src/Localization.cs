@@ -179,6 +179,11 @@ internal static class Loc
         ["次のコマ"] = "Next frame",
         ["再生 / 停止"] = "Play / Pause",
         ["再生速度"] = "Playback speed",
+        ["前の画像"] = "Previous image",
+        ["次の画像"] = "Next image",
+        ["全画面"] = "Fullscreen",
+        ["全画面表示"] = "Enter fullscreen",
+        ["解除"] = "Exit",
         ["キャンバスにて編集"] = "Edit on canvas",
         ["通常の編集画面に切り替え、この画像を新しいキャンバスに配置した状態にします。"] = "Switch to the normal editor with this image placed on a new canvas.",
         // 設定タブ・ファイル関連付け
