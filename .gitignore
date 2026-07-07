@@ -4,6 +4,9 @@
 dist/
 publish/
 installer/out/
+installer/publish/
+tools/.cache/
+tools/.inno6/
 
 # user/IDE
 *.user

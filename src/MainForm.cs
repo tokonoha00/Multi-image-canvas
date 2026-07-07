@@ -113,6 +113,7 @@ internal sealed partial class MainForm : Form
     private ToolStripButton? _gifPlayBtn;
     private ToolStripButton? _gifNextBtn;
     private ToolStripTrackBar? _gifTrack;
+    private ToolStripComboBox? _gifSpeedCombo;
     private ToolStripLabel? _gifFrameLabel;
     private bool _syncingGifUi;
 
@@ -887,7 +888,7 @@ internal sealed partial class MainForm : Form
 
     private void SetGifControlsVisible(bool visible)
     {
-        foreach (var item in new ToolStripItem?[] { _gifSep, _gifPrevBtn, _gifPlayBtn, _gifNextBtn, _gifTrack, _gifFrameLabel })
+        foreach (var item in new ToolStripItem?[] { _gifSep, _gifPrevBtn, _gifPlayBtn, _gifNextBtn, _gifTrack, _gifSpeedCombo, _gifFrameLabel })
         {
             if (item != null) item.Visible = visible;
         }
@@ -896,7 +897,7 @@ internal sealed partial class MainForm : Form
     // 再生状態・現在コマをビュアーバーのUIに反映する
     private void SyncGifControls()
     {
-        if (_gifPlayBtn == null || _gifTrack == null || _gifFrameLabel == null) return;
+        if (_gifPlayBtn == null || _gifTrack == null || _gifSpeedCombo == null || _gifFrameLabel == null) return;
         int count = _canvas.ViewerFrameCount;
         if (count <= 1) return;
 
@@ -907,6 +908,8 @@ internal sealed partial class MainForm : Form
             if (_gifTrack.TrackBar.Maximum != count - 1) _gifTrack.TrackBar.Maximum = count - 1;
             var frame = Math.Clamp(_canvas.ViewerCurrentFrame, 0, count - 1);
             if (_gifTrack.TrackBar.Value != frame) _gifTrack.TrackBar.Value = frame;
+            var speedText = $"{_canvas.ViewerPlaybackSpeed:0.##}x";
+            if (!string.Equals(_gifSpeedCombo.Text, speedText, StringComparison.Ordinal)) _gifSpeedCombo.Text = speedText;
             _gifFrameLabel.Text = $"{frame + 1} / {count}";
         }
         finally
@@ -967,6 +970,14 @@ internal sealed partial class MainForm : Form
         _gifNextBtn = new ToolStripButton(" ⏭ ") { Margin = new Padding(0, 2, 2, 2), ToolTipText = Loc.T("次のコマ") };
         _gifTrack = new ToolStripTrackBar(0, 1, 0);
         _gifTrack.TrackBar.Width = 180;
+        _gifSpeedCombo = new ToolStripComboBox
+        {
+            Width = 72,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            ToolTipText = Loc.T("再生速度"),
+        };
+        foreach (var speed in new[] { "0.25x", "0.5x", "1x", "1.5x", "2x", "4x" }) _gifSpeedCombo.Items.Add(speed);
+        _gifSpeedCombo.SelectedItem = "1x";
         _gifFrameLabel = new ToolStripLabel("") { ForeColor = Theme.Current.TextSecondary };
 
         _gifPrevBtn.Click += (_, _) => _canvas.SetViewerFrame(_canvas.ViewerCurrentFrame - 1);
@@ -977,6 +988,15 @@ internal sealed partial class MainForm : Form
             if (_syncingGifUi) return;
             _canvas.SetViewerFrame(_gifTrack.TrackBar.Value);
         };
+        _gifSpeedCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_syncingGifUi) return;
+            var raw = (_gifSpeedCombo.SelectedItem as string ?? "1x").TrimEnd('x');
+            if (float.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var speed))
+            {
+                _canvas.SetViewerPlaybackSpeed(speed);
+            }
+        };
         _canvas.ViewerFrameChanged += (_, _) => SyncGifControls();
 
         _viewerBar.Items.Add(_gifSep);
@@ -984,6 +1004,7 @@ internal sealed partial class MainForm : Form
         _viewerBar.Items.Add(_gifPlayBtn);
         _viewerBar.Items.Add(_gifNextBtn);
         _viewerBar.Items.Add(_gifTrack);
+        _viewerBar.Items.Add(_gifSpeedCombo);
         _viewerBar.Items.Add(_gifFrameLabel);
         SetGifControlsVisible(false);
 
@@ -1227,14 +1248,7 @@ internal sealed partial class MainForm : Form
         {
             if (e.Button != MouseButtons.Left) return;
             const int grip = 8;
-            if (ReferenceEquals(strip, _menuBar) && e.Y < grip)
-            {
-                ReleaseCapture();
-                if (e.X < grip) SendMessage(Handle, 0xA1, 13, 0);      // HTTOPLEFT
-                else if (e.X > strip.Width - grip) SendMessage(Handle, 0xA1, 14, 0); // HTTOPRIGHT
-                else SendMessage(Handle, 0xA1, 12, 0);                  // HTTOP
-                return;
-            }
+            if (TryBeginTopResize(strip, e.Location)) return;
 
             var item = strip.GetItemAt(e.Location);
             if (item != null) return;
@@ -1543,7 +1557,7 @@ internal sealed partial class MainForm : Form
     {
         // ドラッグ・パン中は非表示にして残像 (毎フレームの移動再描画による尾引き) を防ぐ。
         // 操作が終わると CanvasUpdated 経由で再表示される
-        bool visible = _canvas.Selected != null && !_uiHidden && !_canvas.IsInteracting;
+        bool visible = !_viewerMode && !_canvas.ReadOnlyView && _canvas.Selected != null && !_uiHidden && !_canvas.IsInteracting;
 
         if (_itemPanel.Visible != visible)
         {

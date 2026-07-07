@@ -189,6 +189,7 @@ internal sealed class CanvasSurface : Control
     public int ViewerFrameCount { get; private set; }
     public int ViewerCurrentFrame => _viewerFrame;
     public bool ViewerAnimationPlaying { get; private set; }
+    public float ViewerPlaybackSpeed { get; private set; } = 1.0f;
 
     // フレーム移動・再生状態の変化を通知 (ビュアーバーのUI同期用)
     public event EventHandler? ViewerFrameChanged;
@@ -201,6 +202,7 @@ internal sealed class CanvasSurface : Control
         ViewerFrameCount = 0;
         _viewerFrame = 0;
         ViewerAnimationPlaying = false;
+        ViewerPlaybackSpeed = 1.0f;
 
         var primary = _doc?.Items.FirstOrDefault(i => i.IsAnimated);
         if (primary == null)
@@ -259,6 +261,16 @@ internal sealed class CanvasSurface : Control
         ViewerFrameChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    public void SetViewerPlaybackSpeed(float speed)
+    {
+        ViewerPlaybackSpeed = Math.Clamp(speed, 0.25f, 4.0f);
+        if (ViewerAnimationPlaying)
+        {
+            _viewerAnimTimer.Interval = CurrentViewerDelay();
+        }
+        ViewerFrameChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     // 指定コマを表示する。既定では再生を停止してそのコマに留まる
     public void SetViewerFrame(int index, bool pausePlayback = true)
     {
@@ -283,8 +295,11 @@ internal sealed class CanvasSurface : Control
         ViewerFrameChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private int CurrentViewerDelay() =>
-        _viewerFrameDelays.Length > 0 ? _viewerFrameDelays[_viewerFrame % _viewerFrameDelays.Length] : 100;
+    private int CurrentViewerDelay()
+    {
+        var delay = _viewerFrameDelays.Length > 0 ? _viewerFrameDelays[_viewerFrame % _viewerFrameDelays.Length] : 100;
+        return Math.Max(10, (int)Math.Round(delay / ViewerPlaybackSpeed));
+    }
 
     private void ApplyViewerFrame(int index)
     {

@@ -178,6 +178,7 @@ internal static class Loc
         ["前のコマ"] = "Previous frame",
         ["次のコマ"] = "Next frame",
         ["再生 / 停止"] = "Play / Pause",
+        ["再生速度"] = "Playback speed",
         ["キャンバスにて編集"] = "Edit on canvas",
         ["通常の編集画面に切り替え、この画像を新しいキャンバスに配置した状態にします。"] = "Switch to the normal editor with this image placed on a new canvas.",
         // 設定タブ・ファイル関連付け
