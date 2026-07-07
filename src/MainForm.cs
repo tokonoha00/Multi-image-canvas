@@ -113,7 +113,7 @@ internal sealed partial class MainForm : Form
     private ToolStripButton? _gifPlayBtn;
     private ToolStripButton? _gifNextBtn;
     private ToolStripTrackBar? _gifTrack;
-    private ToolStripComboBox? _gifSpeedCombo;
+    private ComboBox? _gifSpeedCombo;
     private ToolStripLabel? _gifFrameLabel;
     private bool _syncingGifUi;
     private readonly Panel _viewerNavPanel = new();
@@ -969,10 +969,11 @@ internal sealed partial class MainForm : Form
 
     private void SetGifControlsVisible(bool visible)
     {
-        foreach (var item in new ToolStripItem?[] { _gifSep, _gifPrevBtn, _gifPlayBtn, _gifNextBtn, _gifTrack, _gifSpeedCombo, _gifFrameLabel })
+        foreach (var item in new ToolStripItem?[] { _gifSep, _gifPrevBtn, _gifPlayBtn, _gifNextBtn, _gifTrack, _gifFrameLabel })
         {
             if (item != null) item.Visible = visible;
         }
+        if (_gifSpeedCombo != null) _gifSpeedCombo.Visible = visible;
     }
 
     // 再生状態・現在コマをビュアーバーのUIに反映する
@@ -990,7 +991,10 @@ internal sealed partial class MainForm : Form
             var frame = Math.Clamp(_canvas.ViewerCurrentFrame, 0, count - 1);
             if (_gifTrack.TrackBar.Value != frame) _gifTrack.TrackBar.Value = frame;
             var speedText = $"{_canvas.ViewerPlaybackSpeed:0.##}x";
-            if (!string.Equals(_gifSpeedCombo.Text, speedText, StringComparison.Ordinal)) _gifSpeedCombo.Text = speedText;
+            if (!_gifSpeedCombo.DroppedDown && !_gifSpeedCombo.Focused && !string.Equals(_gifSpeedCombo.Text, speedText, StringComparison.Ordinal))
+            {
+                _gifSpeedCombo.SelectedItem = speedText;
+            }
             _gifFrameLabel.Text = $"{frame + 1} / {count}";
         }
         finally
@@ -1051,14 +1055,6 @@ internal sealed partial class MainForm : Form
         _gifNextBtn = new ToolStripButton(" ⏭ ") { Margin = new Padding(0, 2, 2, 2), ToolTipText = Loc.T("次のコマ") };
         _gifTrack = new ToolStripTrackBar(0, 1, 0);
         _gifTrack.TrackBar.Width = 180;
-        _gifSpeedCombo = new ToolStripComboBox
-        {
-            Width = 72,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            ToolTipText = Loc.T("再生速度"),
-        };
-        foreach (var speed in new[] { "0.25x", "0.5x", "1x", "1.5x", "2x", "4x" }) _gifSpeedCombo.Items.Add(speed);
-        _gifSpeedCombo.SelectedItem = "1x";
         _gifFrameLabel = new ToolStripLabel("") { ForeColor = Theme.Current.TextSecondary };
 
         _gifPrevBtn.Click += (_, _) => _canvas.SetViewerFrame(_canvas.ViewerCurrentFrame - 1);
@@ -1069,15 +1065,6 @@ internal sealed partial class MainForm : Form
             if (_syncingGifUi) return;
             _canvas.SetViewerFrame(_gifTrack.TrackBar.Value);
         };
-        _gifSpeedCombo.SelectedIndexChanged += (_, _) =>
-        {
-            if (_syncingGifUi) return;
-            var raw = (_gifSpeedCombo.SelectedItem as string ?? "1x").TrimEnd('x');
-            if (float.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var speed))
-            {
-                _canvas.SetViewerPlaybackSpeed(speed);
-            }
-        };
         _canvas.ViewerFrameChanged += (_, _) => SyncGifControls();
 
         _viewerBar.Items.Add(_gifSep);
@@ -1085,7 +1072,6 @@ internal sealed partial class MainForm : Form
         _viewerBar.Items.Add(_gifPlayBtn);
         _viewerBar.Items.Add(_gifNextBtn);
         _viewerBar.Items.Add(_gifTrack);
-        _viewerBar.Items.Add(_gifSpeedCombo);
         _viewerBar.Items.Add(_gifFrameLabel);
         SetGifControlsVisible(false);
 
@@ -1102,25 +1088,37 @@ internal sealed partial class MainForm : Form
 
     private void BuildViewerNavPanel()
     {
-        _viewerNavPanel.Size = new Size(420, 52);
+        _viewerNavPanel.Size = new Size(520, 52);
         _viewerNavPanel.Padding = new Padding(12, 8, 12, 8);
         _viewerNavPanel.Visible = false;
 
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
+            ColumnCount = 5,
             RowCount = 1,
             BackColor = Color.Transparent,
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
 
         _viewerPrevBtn = ViewerNavButton("<", Loc.T("前の画像"));
         _viewerNextBtn = ViewerNavButton(">", Loc.T("次の画像"));
         _viewerFullscreenBtn = ViewerNavButton(Loc.T("全画面"), Loc.T("全画面表示"));
+        _gifSpeedCombo = new ComboBox
+        {
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            Margin = new Padding(4, 4, 4, 4),
+            Visible = false,
+        };
+        foreach (var speed in new[] { "0.25x", "0.5x", "1x", "1.5x", "2x", "4x" }) _gifSpeedCombo.Items.Add(speed);
+        _gifSpeedCombo.SelectedItem = "1x";
+        new ToolTip().SetToolTip(_gifSpeedCombo, Loc.T("再生速度"));
         _viewerPageLabel = new Label
         {
             Dock = DockStyle.Fill,
@@ -1131,11 +1129,21 @@ internal sealed partial class MainForm : Form
         _viewerPrevBtn.Click += (_, _) => NavigateViewerImage(-1);
         _viewerNextBtn.Click += (_, _) => NavigateViewerImage(+1);
         _viewerFullscreenBtn.Click += (_, _) => ToggleViewerFullscreen();
+        _gifSpeedCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_syncingGifUi) return;
+            var raw = (_gifSpeedCombo.SelectedItem as string ?? "1x").TrimEnd('x');
+            if (float.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var speed))
+            {
+                _canvas.SetViewerPlaybackSpeed(speed);
+            }
+        };
 
         layout.Controls.Add(_viewerPrevBtn, 0, 0);
         layout.Controls.Add(_viewerPageLabel, 1, 0);
         layout.Controls.Add(_viewerNextBtn, 2, 0);
-        layout.Controls.Add(_viewerFullscreenBtn, 3, 0);
+        layout.Controls.Add(_gifSpeedCombo, 3, 0);
+        layout.Controls.Add(_viewerFullscreenBtn, 4, 0);
         _viewerNavPanel.Controls.Add(layout);
 
         WireViewerActivity(_viewerNavPanel);
@@ -1164,7 +1172,7 @@ internal sealed partial class MainForm : Form
     private void UpdateViewerNavPanelBounds()
     {
         if (_canvas.ClientSize.Width <= 0 || _canvas.ClientSize.Height <= 0) return;
-        var width = Math.Min(480, Math.Max(320, _canvas.ClientSize.Width - 48));
+        var width = Math.Min(560, Math.Max(380, _canvas.ClientSize.Width - 48));
         _viewerNavPanel.Size = new Size(width, 52);
         _viewerNavPanel.Location = new Point((_canvas.ClientSize.Width - width) / 2, _canvas.ClientSize.Height - _viewerNavPanel.Height - 20);
         _viewerNavPanel.BringToFront();
@@ -1181,6 +1189,7 @@ internal sealed partial class MainForm : Form
         if (_viewerPrevBtn != null) _viewerPrevBtn.Enabled = _viewerFiles.Count > 1;
         if (_viewerNextBtn != null) _viewerNextBtn.Enabled = _viewerFiles.Count > 1;
         if (_viewerFullscreenBtn != null) _viewerFullscreenBtn.Text = _viewerFullscreen ? Loc.T("解除") : Loc.T("全画面");
+        if (_gifSpeedCombo != null) _gifSpeedCombo.Visible = _canvas.ViewerFrameCount > 1;
         UpdateViewerNavPanelBounds();
     }
 
@@ -1242,6 +1251,10 @@ internal sealed partial class MainForm : Form
         if (control is RoundedFlatButton btn)
         {
             btn.BaseColor = Blend(Theme.Current.CanvasBg, Theme.Current.ButtonBg, opacity);
+        }
+        else if (control is ComboBox combo)
+        {
+            combo.BackColor = Blend(Theme.Current.CanvasBg, Theme.Current.Surface, opacity);
         }
         foreach (Control child in control.Controls) ApplyViewerNavControlOpacity(child, opacity, fore);
     }
@@ -2909,11 +2922,9 @@ internal sealed partial class MainForm : Form
             switch (keyData & Keys.KeyCode)
             {
                 case Keys.Left:
-                case Keys.Up:
                     NavigateViewerImage(-1);
                     return true;
                 case Keys.Right:
-                case Keys.Down:
                     NavigateViewerImage(+1);
                     return true;
                 case Keys.Escape:
