@@ -113,7 +113,7 @@ internal sealed partial class MainForm : Form
     private Button? _gifPrevBtn;
     private Button? _gifPlayBtn;
     private Button? _gifNextBtn;
-    private TrackBar? _gifTrack;
+    private FlatSlider? _gifTrack;
     private ComboBox? _gifSpeedCombo;
     private Label? _gifFrameLabel;
     private bool _syncingGifUi;
@@ -1134,15 +1134,15 @@ internal sealed partial class MainForm : Form
             button.Size = new Size(28, 34);
             button.Margin = new Padding(1, 0, 1, 0);
         }
-        _gifTrack = new TrackBar
+        _gifTrack = new FlatSlider
         {
             Width = 72,
-            Height = 34,
+            Height = 26,
             Minimum = 0,
             Maximum = 1,
             Value = 0,
-            TickStyle = TickStyle.None,
             Margin = new Padding(2, 4, 2, 0),
+            BackColor = Theme.Current.Surface,
         };
         _gifSpeedCombo = new ComboBox
         {
@@ -1371,6 +1371,10 @@ internal sealed partial class MainForm : Form
         else if (control is ComboBox combo)
         {
             combo.BackColor = Blend(Theme.Current.CanvasBg, Theme.Current.Surface, opacity);
+        }
+        else if (control is FlatSlider slider)
+        {
+            slider.BackColor = Blend(Theme.Current.CanvasBg, Theme.Current.Surface, opacity);
         }
         foreach (Control child in control.Controls) ApplyViewerNavControlOpacity(child, opacity, fore);
     }
