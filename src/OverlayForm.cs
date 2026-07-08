@@ -43,6 +43,7 @@ internal static class OverlayAnimations
 // フォーカスを奪わない (WS_EX_NOACTIVATE) ため、ゲーム操作を中断させない。
 internal sealed class OverlayForm : Form
 {
+    private static readonly Color TransparentKeyColor = Color.FromArgb(1, 2, 3);
     private readonly CanvasSurface _canvas;
 
     [DllImport("user32.dll")]
@@ -86,8 +87,8 @@ internal sealed class OverlayForm : Form
         FormBorderStyle = FormBorderStyle.None;
         TopMost = true;
         ShowInTaskbar = false;
-        BackColor = Color.LimeGreen;
-        TransparencyKey = Color.LimeGreen;
+        BackColor = TransparentKeyColor;
+        TransparencyKey = TransparentKeyColor;
         DoubleBuffered = true;
 
         _targetOpacity = opacity;
@@ -169,10 +170,10 @@ internal sealed class OverlayForm : Form
     private void OverlayForm_Paint(object? sender, PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.None; // 透過キー色とのブレンドによる緑フリンジを防ぐ
+        g.SmoothingMode = SmoothingMode.None;
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
 
-        g.Clear(Color.LimeGreen);
+        g.Clear(TransparentKeyColor);
 
         var offset = _canvas.ScrollOffset;
         var zoom = _canvas.Zoom;
@@ -214,7 +215,7 @@ internal sealed class OverlayForm : Form
         if (_animProgress < 1f)
         {
             g.ResetTransform();
-            using var brush = new SolidBrush(Color.LimeGreen);
+            using var brush = new SolidBrush(TransparentKeyColor);
 
             switch (_animation)
             {

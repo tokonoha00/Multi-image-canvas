@@ -1510,7 +1510,7 @@ internal sealed partial class MainForm : Form
 
         // ウィンドウ外に出る or 3秒間カーソルが動かない → フェードアウト
         bool active = pointerInside && (DateTime.UtcNow - _lastViewerActivity).TotalSeconds < 3;
-        var step = active ? 0.25f : -0.08f;
+        var step = active ? 0.25f : -0.22f;
         _viewerChromeOpacity = Math.Clamp(_viewerChromeOpacity + step, 0f, 1f);
         ApplyViewerNavOpacity(_viewerChromeOpacity);
         _viewerNavPanel.Visible = _viewerChromeOpacity > 0f;
