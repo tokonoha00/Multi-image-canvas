@@ -55,6 +55,8 @@ internal sealed class OverlayForm : Form
     private const int WS_EX_TRANSPARENT = 0x20;
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int WS_EX_TOOLWINDOW = 0x80;
+    private const int WM_NCHITTEST = 0x0084;
+    private const int HTTRANSPARENT = -1;
 
     private bool _isDraggingWindow;
     private Point _dragMouseStart;
@@ -312,10 +314,49 @@ internal sealed class OverlayForm : Form
         Close();
     }
 
+    private bool HitVisibleOverlayPixel(Point client)
+    {
+        var offset = _canvas.ScrollOffset;
+        var zoom = _canvas.Zoom;
+        var world = new PointF((client.X + offset.X) / zoom, (client.Y + offset.Y) / zoom);
+
+        foreach (var item in _canvas.Items.Reverse())
+        {
+            if (!item.Visible || !item.HitTest(world)) continue;
+            if (HitVisibleItemPixel(item, world)) return true;
+        }
+        return false;
+    }
+
+    private static bool HitVisibleItemPixel(CanvasItem item, PointF world)
+    {
+        var local = item.ToLocal(world);
+        if (item.Dest.Width <= 0 || item.Dest.Height <= 0) return false;
+
+        var u = (local.X - item.Dest.X) / item.Dest.Width;
+        var v = (local.Y - item.Dest.Y) / item.Dest.Height;
+        if (u < 0f || u > 1f || v < 0f || v > 1f) return false;
+        if (item.FlipH) u = 1f - u;
+        if (item.FlipV) v = 1f - v;
+
+        var sx = (int)Math.Clamp(item.Crop.X + item.Crop.Width * u, 0, item.Image.Width - 1);
+        var sy = (int)Math.Clamp(item.Crop.Y + item.Crop.Height * v, 0, item.Image.Height - 1);
+        return item.Image is not Bitmap bmp || bmp.GetPixel(sx, sy).A > 24;
+    }
+
     protected override void WndProc(ref Message m)
     {
         const int WM_MOUSEACTIVATE = 0x0021;
         const int MA_ACTIVATE = 1;
+        if (m.Msg == WM_NCHITTEST)
+        {
+            var screen = new Point((short)(m.LParam.ToInt64() & 0xffff), (short)((m.LParam.ToInt64() >> 16) & 0xffff));
+            if (_clickThrough || !HitVisibleOverlayPixel(PointToClient(screen)))
+            {
+                m.Result = HTTRANSPARENT;
+                return;
+            }
+        }
         if (m.Msg == WM_MOUSEACTIVATE)
         {
             m.Result = MA_ACTIVATE;
