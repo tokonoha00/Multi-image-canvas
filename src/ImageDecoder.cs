@@ -26,25 +26,29 @@ internal static class ImageDecoder
     public static bool IsSupported(string path) =>
         SupportedExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
-    public static Image Decode(string path)
+    // fixTransparency: 透明縁のRGBにじみ補正を行うか。
+    //   編集/オーバーレイでは拡大縮小で縁がにじむため true。
+    //   ビュアーは等倍～フィット表示のみで補正が不要なうえ、大きな透明PNGでは
+    //   この走査が非常に重い (数十秒) ため false にして即時表示する。
+    public static Image Decode(string path, bool fixTransparency = true)
     {
         var ext = Path.GetExtension(path).ToLowerInvariant();
 
         if (GdiExtensions.Contains(ext))
         {
-            try { return DecodeGdi(path); }
+            try { return DecodeGdi(path, fixTransparency); }
             catch { /* GDI+失敗時はWICにフォールバック */ }
         }
 
-        try { return DecodeWic(path); }
+        try { return DecodeWic(path, fixTransparency); }
         catch when (GdiExtensions.Contains(ext) == false)
         {
             // WICも失敗した未知の形式は最後にGDI+を試す
-            return DecodeGdi(path);
+            return DecodeGdi(path, fixTransparency);
         }
     }
 
-    private static Image DecodeGdi(string path)
+    private static Image DecodeGdi(string path, bool fixTransparency)
     {
         var bytes = File.ReadAllBytes(path);
         var ms = new MemoryStream(bytes);
@@ -58,14 +62,16 @@ internal static class ImageDecoder
         }
 
         // 静止画はビットマップに複製してストリームを解放
+        var sourceHasAlpha = Image.IsAlphaPixelFormat(img.PixelFormat);
         var cloned = new Bitmap(img);
-        FixTransparentRgb(cloned);
         img.Dispose();
         ms.Dispose();
+        // JPEG等アルファを持たない画像は補正不要 (全ピクセル走査を省く)
+        if (fixTransparency && sourceHasAlpha) FixTransparentRgb(cloned);
         return cloned;
     }
 
-    private static Image DecodeWic(string path)
+    private static Image DecodeWic(string path, bool fixTransparency)
     {
         var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(
             new Uri(Path.GetFullPath(path)),
@@ -86,7 +92,7 @@ internal static class ImageDecoder
         {
             bmp.UnlockBits(data);
         }
-        FixTransparentRgb(bmp);
+        if (fixTransparency) FixTransparentRgb(bmp);
         return bmp;
     }
 
@@ -104,6 +110,7 @@ internal static class ImageDecoder
             byte[] pixels = new byte[stride * bmp.Height];
             System.Runtime.InteropServices.Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
 
+            bool wroteAnything = false;
             bool changed;
             for (int pass = 0; pass < 4; pass++)
             {
@@ -136,11 +143,16 @@ internal static class ImageDecoder
                         pixels[offset + 1] = (byte)(g / count);
                         pixels[offset + 2] = (byte)(r / count);
                         changed = true;
+                        wroteAnything = true;
                     }
                 }
                 if (!changed) break;
             }
-            System.Runtime.InteropServices.Marshal.Copy(pixels, 0, data.Scan0, pixels.Length);
+            // 補正対象が無ければ書き戻し(全画素コピー)を省く (不透明画像の無駄を排除)
+            if (wroteAnything)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(pixels, 0, data.Scan0, pixels.Length);
+            }
         }
         finally
         {

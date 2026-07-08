@@ -151,6 +151,8 @@ internal sealed partial class MainForm : Form
     private bool _viewerMode;
     private readonly ClickThroughToolStrip _viewerBar = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
     private ToolStripLabel? _viewerTitle;
+    private ToolStripButton? _viewerEditBtn;
+    private string _viewerEditFullText = "";
 
     // ビュアーのGIFアニメ操作UI
     private FlowLayoutPanel? _gifPanel;
@@ -1062,7 +1064,8 @@ internal sealed partial class MainForm : Form
         {
             if (_viewerPreloads.Remove(path, out var preloaded)) return preloaded;
         }
-        return Task.Run(() => ImageDecoder.Decode(path));
+        // ビュアーは表示のみ。透明にじみ補正を省いて即時表示する
+        return Task.Run(() => ImageDecoder.Decode(path, fixTransparency: false));
     }
 
     private void QueueViewerPreloads()
@@ -1088,7 +1091,7 @@ internal sealed partial class MainForm : Form
             {
                 if (string.Equals(target, _viewerCurrentPath, StringComparison.OrdinalIgnoreCase)) continue;
                 if (_viewerPreloads.ContainsKey(target)) continue;
-                _viewerPreloads[target] = Task.Run(() => ImageDecoder.Decode(target));
+                _viewerPreloads[target] = Task.Run(() => ImageDecoder.Decode(target, fixTransparency: false));
             }
         }
     }
@@ -1163,6 +1166,7 @@ internal sealed partial class MainForm : Form
         _viewerBar.Visible = true;
         _viewerNavPanel.Visible = false;
         _viewerChromeTimer.Start();
+        AdjustViewerBarLayout();
 
         var first = _startupArgs.Select(a => a.Trim().Trim('"')).FirstOrDefault(File.Exists);
         if (first != null)
@@ -1181,15 +1185,22 @@ internal sealed partial class MainForm : Form
         _viewerBar.Padding = new Padding(10, 4, 10, 2);
         _viewerBar.Height = 40;
         _viewerBar.Visible = false;
+        // 幅が足りないときにキャプションボタンをオーバーフロー(▼)へ畳ませない。
+        // 代わりに AdjustViewerBarLayout で編集ボタン/タイトルを縮める。
+        _viewerBar.CanOverflow = false;
+        _viewerBar.LayoutStyle = ToolStripLayoutStyle.HorizontalStackWithOverflow;
         WireTitleBarDrag(_viewerBar);
 
-        var editBtn = new ToolStripButton(" 🖊 " + Loc.T("キャンバスにて編集") + " ")
+        _viewerEditFullText = " 🖊 " + Loc.T("キャンバスにて編集") + " ";
+        var editBtn = new ToolStripButton(_viewerEditFullText)
         {
             Margin = new Padding(2, 2, 2, 2),
             ToolTipText = Loc.T("通常の編集画面に切り替え、この画像を新しいキャンバスに配置した状態にします。"),
         };
         editBtn.Click += (_, _) => SwitchToEditorFromViewer();
         _viewerBar.Items.Add(editBtn);
+        _viewerEditBtn = editBtn;
+        _viewerBar.SizeChanged += (_, _) => AdjustViewerBarLayout();
 
         _viewerTitle = new ToolStripLabel("") { ForeColor = Theme.Current.TextSecondary, Margin = new Padding(12, 0, 0, 0) };
         _viewerTitle.MouseDown += (_, e) =>
@@ -1199,6 +1210,25 @@ internal sealed partial class MainForm : Form
         _viewerBar.Items.Add(_viewerTitle);
 
         AddCaptionButtons(_viewerBar);
+    }
+
+    // ビュアーバーの幅に応じてレイアウトを調整する。狭いときはタイトルを隠し、
+    // さらに狭ければ編集ボタンをアイコンのみに縮めて、キャプションボタンを常に表示に保つ。
+    private void AdjustViewerBarLayout()
+    {
+        if (_viewerEditBtn == null || _viewerTitle == null) return;
+
+        // キャプションボタン(閉じる/最大化/最小化)の合計幅
+        int captionWidth = _maximizeButtons.Count > 0 ? 46 * 3 : 0;
+        int available = _viewerBar.Width - _viewerBar.Padding.Horizontal - captionWidth;
+
+        bool showFullEdit = available >= 210;
+        bool showTitle = available >= 210 + 90; // 編集ボタン全文 + タイトルの余地
+
+        var wantedEditText = showFullEdit ? _viewerEditFullText : " 🖊 ";
+        if (_viewerEditBtn.Text != wantedEditText) _viewerEditBtn.Text = wantedEditText;
+        _viewerEditBtn.AutoToolTip = !showFullEdit;
+        if (_viewerTitle.Visible != showTitle) _viewerTitle.Visible = showTitle;
     }
 
     // Windows標準風のキャプションボタン (右端から 閉じる/最大化/最小化 の順)
