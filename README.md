@@ -1,7 +1,7 @@
 # Multi Image Canvas
 
 ゲーム・クリエイティブ作業中に参考画像をオーバーレイ表示するための Windows ネイティブ画像ビュアー。
-.NET 8 / WinForms 製。旧 `NativeImageCanvas`（単一Program.cs構成）の全面リファクタ版。
+.NET 8 / WinForms 製。
 
 ## ダウンロード
 
