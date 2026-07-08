@@ -168,7 +168,7 @@ internal sealed partial class MainForm : Form
     private Label? _gifFrameLabel;
     private bool _syncingGifUi;
     private readonly Panel _viewerNavPanel = new();
-    private FlowLayoutPanel? _navFlow;
+    private Panel? _navFlow;
     private FlowLayoutPanel? _pageGroup;
     private Label? _viewerPageLabel;
     private Button? _viewerPrevBtn, _viewerNextBtn, _viewerFullscreenBtn;
@@ -1275,13 +1275,9 @@ internal sealed partial class MainForm : Form
         _viewerNavPanel.Padding = new Padding(10, 8, 10, 8);
         _viewerNavPanel.Visible = false;
 
-        var layout = new FlowLayoutPanel
+        var layout = new Panel
         {
             Location = new Point(_viewerNavPanel.Padding.Left, _viewerNavPanel.Padding.Top),
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
             BackColor = Color.Transparent,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
@@ -1439,27 +1435,44 @@ internal sealed partial class MainForm : Form
         if (_canvas.ClientSize.Width <= 0 || _canvas.ClientSize.Height <= 0) return;
 
         int availableWidth = Math.Max(120, _canvas.ClientSize.Width - 24);
-        _navFlow.WrapContents = false;
-        _navFlow.MaximumSize = Size.Empty;
-        _navFlow.PerformLayout();
-        var pref = _navFlow.PreferredSize;
-
         int contentMaxWidth = Math.Max(1, availableWidth - _viewerNavPanel.Padding.Horizontal);
-        if (pref.Width > contentMaxWidth)
-        {
-            _navFlow.WrapContents = true;
-            _navFlow.MaximumSize = new Size(contentMaxWidth, 0);
-            _navFlow.PerformLayout();
-            pref = _navFlow.PreferredSize;
-        }
+        int gap = 8;
 
-        int width = Math.Min(pref.Width + _viewerNavPanel.Padding.Horizontal, availableWidth);
-        int height = Math.Max(50, pref.Height + _viewerNavPanel.Padding.Vertical);
+        var gifSize = _gifPanel?.Visible == true ? _gifPanel.PreferredSize : Size.Empty;
+        var pageSize = _pageGroup?.Visible == true ? _pageGroup.PreferredSize : Size.Empty;
+        var fullSize = _viewerFullscreenBtn?.Visible == true ? _viewerFullscreenBtn.Size : Size.Empty;
+        int height = Math.Max(50, Math.Max(Math.Max(gifSize.Height, pageSize.Height), fullSize.Height) + _viewerNavPanel.Padding.Vertical);
+
+        bool hasGif = gifSize.Width > 0;
+        bool hasPage = pageSize.Width > 0;
+        bool hasFull = fullSize.Width > 0;
+        int sideWidth = Math.Max(gifSize.Width, fullSize.Width);
+        int desiredContentWidth = hasPage
+            ? sideWidth * 2 + pageSize.Width + gap * 2
+            : (hasGif ? gifSize.Width + gap : 0) + (hasFull ? fullSize.Width : 0);
+        int contentWidth = Math.Min(Math.Max(desiredContentWidth, fullSize.Width), contentMaxWidth);
+        int width = contentWidth + _viewerNavPanel.Padding.Horizontal;
 
         _viewerNavPanel.Size = new Size(width, height);
         _viewerNavPanel.Location = new Point(
             (_canvas.ClientSize.Width - width) / 2,
             _canvas.ClientSize.Height - height - 20);
+
+        _navFlow.Bounds = new Rectangle(_viewerNavPanel.Padding.Left, _viewerNavPanel.Padding.Top, contentWidth, height - _viewerNavPanel.Padding.Vertical);
+
+        if (desiredContentWidth <= contentMaxWidth && hasPage)
+        {
+            if (_gifPanel != null) _gifPanel.Location = new Point(0, 0);
+            if (_pageGroup != null) _pageGroup.Location = new Point((contentWidth - pageSize.Width) / 2, 0);
+            if (_viewerFullscreenBtn != null) _viewerFullscreenBtn.Location = new Point(contentWidth - fullSize.Width, 0);
+        }
+        else
+        {
+            int x = 0;
+            if (_gifPanel?.Visible == true) { _gifPanel.Location = new Point(x, 0); x += gifSize.Width + gap; }
+            if (_pageGroup?.Visible == true) { _pageGroup.Location = new Point(x, 0); x += pageSize.Width + gap; }
+            if (_viewerFullscreenBtn != null) _viewerFullscreenBtn.Location = new Point(Math.Min(x, Math.Max(0, contentWidth - fullSize.Width)), 0);
+        }
         _viewerNavPanel.BringToFront();
     }
 
