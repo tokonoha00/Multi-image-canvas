@@ -55,6 +55,7 @@ internal sealed partial class MainForm : Form
     private const int WM_GETMINMAXINFO = 0x0024;
     private const int WM_NCHITTEST = 0x0084;
     private const int WM_NCACTIVATE = 0x0086;
+    private const int WM_NCPAINT = 0x0085;
     private const int WM_NCMOUSEMOVE = 0x00A0;
     private const int WM_NCMOUSELEAVE = 0x02A2;
     private const int WM_NCLBUTTONDOWN = 0x00A1;
@@ -3236,6 +3237,11 @@ internal sealed partial class MainForm : Form
         if (m.Msg == WM_NCACTIVATE)
         {
             m.Result = new IntPtr(1);
+            return;
+        }
+        if (m.Msg == WM_NCPAINT)
+        {
+            m.Result = IntPtr.Zero;
             return;
         }
 
