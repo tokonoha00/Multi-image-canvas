@@ -52,6 +52,11 @@ internal sealed class CaptionToolButton : ToolStripButton
 {
     public CaptionKind Kind { get; }
 
+    // スナップレイアウト対応で最大化ボタンが非クライアント扱い(HTMAXBUTTON)に
+    // なると通常の Selected/Pressed が立たないため、OS由来のホバー/押下を別途保持する。
+    public bool SnapHover { get; set; }
+    public bool SnapPressed { get; set; }
+
     // Segoe MDL2 Assets のキャプショングリフ
     public const string GlyphMinimize = "";
     public const string GlyphMaximize = "";
@@ -175,11 +180,13 @@ internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
         // Windows標準風キャプションボタン: 角丸なし・全面ホバー、閉じるは赤
         if (e.Item is CaptionToolButton caption)
         {
-            if (e.Item.Selected || e.Item.Pressed)
+            bool hovered = e.Item.Selected || caption.SnapHover;
+            bool pressed = e.Item.Pressed || caption.SnapPressed;
+            if (hovered || pressed)
             {
                 var fill = caption.Kind == CaptionKind.Close
-                    ? (e.Item.Pressed ? Color.FromArgb(0xC4, 0x2B, 0x1C) : Color.FromArgb(0xE8, 0x11, 0x23))
-                    : (e.Item.Pressed
+                    ? (pressed ? Color.FromArgb(0xC4, 0x2B, 0x1C) : Color.FromArgb(0xE8, 0x11, 0x23))
+                    : (pressed
                         ? Color.FromArgb(60, Theme.Current.TextPrimary)
                         : Color.FromArgb(25, Theme.Current.TextPrimary));
                 using var capBrush = new SolidBrush(fill);

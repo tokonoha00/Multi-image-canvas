@@ -20,6 +20,50 @@ internal sealed partial class MainForm : Form
     private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
     [DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+    [DllImport("user32.dll")]
+    private static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TRACKMOUSEEVENT
+    {
+        public int cbSize;
+        public int dwFlags;
+        public IntPtr hwndTrack;
+        public int dwHoverTime;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINTL { public int x; public int y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MINMAXINFO
+    {
+        public POINTL ptReserved;
+        public POINTL ptMaxSize;
+        public POINTL ptMaxPosition;
+        public POINTL ptMinTrackSize;
+        public POINTL ptMaxTrackSize;
+    }
+
+    // ウィンドウスタイル (Aeroスナップ/最大化/最小化を有効化するため付与)
+    private const int WS_MINIMIZEBOX = 0x00020000;
+    private const int WS_MAXIMIZEBOX = 0x00010000;
+    private const int WS_THICKFRAME = 0x00040000; // WS_SIZEBOX
+
+    // WndProc メッセージ/ヒットテスト定数
+    private const int WM_NCCALCSIZE = 0x0083;
+    private const int WM_GETMINMAXINFO = 0x0024;
+    private const int WM_NCHITTEST = 0x0084;
+    private const int WM_NCMOUSEMOVE = 0x00A0;
+    private const int WM_NCMOUSELEAVE = 0x02A2;
+    private const int WM_NCLBUTTONDOWN = 0x00A1;
+    private const int WM_NCLBUTTONUP = 0x00A2;
+    private const int HTMAXBUTTON = 9;
+    private const int TME_LEAVE = 0x00000002;
+    private const int TME_NONCLIENT = 0x00000010;
+
+    // スナップレイアウトのフライアウト表示中に最大化ボタンをホバー追跡しているか
+    private bool _trackingNcLeave;
 
     private const int WM_HOTKEY = 0x0312;
     private const uint MOD_ALT = 0x1;
@@ -3100,6 +3144,9 @@ internal sealed partial class MainForm : Form
         {
             var cp = base.CreateParams;
             cp.ClassStyle |= 0x00020000; // CS_DROPSHADOW
+            // OSのウィンドウ管理(Aeroスナップ/Win+矢印/スナップレイアウト/最大化・最小化)を
+            // 有効化する。枠自体は WM_NCCALCSIZE で消してborderless外観を維持する。
+            cp.Style |= WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX;
             return cp;
         }
     }
@@ -3120,8 +3167,9 @@ internal sealed partial class MainForm : Form
 
     private void UpdateWindowRegion()
     {
-        // 全画面表示中は角丸にせず画面全体を覆う
-        if (_viewerFullscreen)
+        // 全画面表示中・最大化中は角丸にせず画面全体を覆う
+        // (スナップ最大化時に画面隅へ隙間が出るのを防ぐ)
+        if (_viewerFullscreen || WindowState == FormWindowState.Maximized)
         {
             Region = null;
             UpdateSidebarBounds();
@@ -3137,10 +3185,35 @@ internal sealed partial class MainForm : Form
 
     protected override void WndProc(ref Message m)
     {
-        const int WM_NCHITTEST = 0x0084;
         const int WM_MOUSEACTIVATE = 0x0021;
         const int MA_ACTIVATE = 1;
         const int gripSize = 8;
+
+        // 非クライアント枠を消し、ウィンドウ全体をクライアント領域にする。
+        // WS_THICKFRAME を付けてもborderless外観を保つための要。
+        if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
+        {
+            m.Result = IntPtr.Zero;
+            return;
+        }
+
+        // 最大化時に作業領域(タスクバーを除く)へ収める。
+        if (m.Msg == WM_GETMINMAXINFO)
+        {
+            var screen = Screen.FromHandle(Handle);
+            var wa = screen.WorkingArea;
+            var mon = screen.Bounds;
+            var mmi = Marshal.PtrToStructure<MINMAXINFO>(m.LParam);
+            mmi.ptMaxPosition.x = wa.Left - mon.Left;
+            mmi.ptMaxPosition.y = wa.Top - mon.Top;
+            mmi.ptMaxSize.x = wa.Width;
+            mmi.ptMaxSize.y = wa.Height;
+            mmi.ptMinTrackSize.x = MinimumSize.Width;
+            mmi.ptMinTrackSize.y = MinimumSize.Height;
+            Marshal.StructureToPtr(mmi, m.LParam, false);
+            m.Result = IntPtr.Zero;
+            return;
+        }
 
         if (m.Msg == WM_MOUSEACTIVATE)
         {
@@ -3173,26 +3246,133 @@ internal sealed partial class MainForm : Form
             }
         }
 
+        // ===== スナップレイアウト対応: 最大化ボタンを HTMAXBUTTON として扱う =====
+        // Win11 は HTMAXBUTTON 上のホバーでスナップレイアウトのフライアウトを表示する。
+        if (m.Msg == WM_NCMOUSEMOVE)
+        {
+            SetMaxButtonHover(m.WParam.ToInt32() == HTMAXBUTTON);
+            base.WndProc(ref m);
+            return;
+        }
+        if (m.Msg == WM_NCMOUSELEAVE)
+        {
+            _trackingNcLeave = false;
+            SetMaxButtonHover(false);
+            SetMaxButtonPressed(false);
+            base.WndProc(ref m);
+            return;
+        }
+        if (m.Msg == WM_NCLBUTTONDOWN && m.WParam.ToInt32() == HTMAXBUTTON)
+        {
+            SetMaxButtonPressed(true);
+            return; // 既定のウィンドウドラッグ開始を抑止
+        }
+        if (m.Msg == WM_NCLBUTTONUP && m.WParam.ToInt32() == HTMAXBUTTON)
+        {
+            SetMaxButtonPressed(false);
+            ToggleMaximizeRestore();
+            return;
+        }
+
         if (m.Msg == WM_NCHITTEST)
         {
-            var pos = new Point(m.LParam.ToInt32() & 0xffff, m.LParam.ToInt32() >> 16);
-            pos = PointToClient(pos);
+            var screenPt = new Point(m.LParam.ToInt32() & 0xffff, m.LParam.ToInt32() >> 16);
 
-            bool left = pos.X < gripSize;
-            bool right = pos.X > ClientSize.Width - gripSize;
-            bool top = pos.Y < gripSize;
-            bool bottom = pos.Y > ClientSize.Height - gripSize;
+            // 最大化ボタン上ならスナップレイアウトを出すため HTMAXBUTTON を返す
+            var maxRect = GetMaximizeButtonScreenRect();
+            if (maxRect is { } r && r.Contains(screenPt))
+            {
+                m.Result = HTMAXBUTTON;
+                return;
+            }
 
-            if (top && left) { m.Result = 13; return; }
-            if (top && right) { m.Result = 14; return; }
-            if (bottom && left) { m.Result = 16; return; }
-            if (bottom && right) { m.Result = 17; return; }
-            if (top) { m.Result = 12; return; }
-            if (bottom) { m.Result = 15; return; }
-            if (left) { m.Result = 10; return; }
-            if (right) { m.Result = 11; return; }
+            var pos = PointToClient(screenPt);
+
+            // 最大化中は端リサイズを無効化する
+            if (WindowState != FormWindowState.Maximized)
+            {
+                bool left = pos.X < gripSize;
+                bool right = pos.X > ClientSize.Width - gripSize;
+                bool top = pos.Y < gripSize;
+                bool bottom = pos.Y > ClientSize.Height - gripSize;
+
+                if (top && left) { m.Result = 13; return; }
+                if (top && right) { m.Result = 14; return; }
+                if (bottom && left) { m.Result = 16; return; }
+                if (bottom && right) { m.Result = 17; return; }
+                if (top) { m.Result = 12; return; }
+                if (bottom) { m.Result = 15; return; }
+                if (left) { m.Result = 10; return; }
+                if (right) { m.Result = 11; return; }
+            }
         }
         base.WndProc(ref m);
+    }
+
+    private void ToggleMaximizeRestore()
+    {
+        WindowState = WindowState == FormWindowState.Maximized
+            ? FormWindowState.Normal
+            : FormWindowState.Maximized;
+    }
+
+    // 現在表示中の最大化ボタン (編集/ビュアーで別インスタンス) を返す
+    private CaptionToolButton? GetVisibleMaximizeButton()
+    {
+        foreach (var btn in _maximizeButtons)
+        {
+            if (btn.Owner is { Visible: true, IsHandleCreated: true })
+                return btn;
+        }
+        return null;
+    }
+
+    private Rectangle? GetMaximizeButtonScreenRect()
+    {
+        var btn = GetVisibleMaximizeButton();
+        if (btn?.Owner == null) return null;
+        try
+        {
+            var topLeft = btn.Owner.PointToScreen(btn.Bounds.Location);
+            return new Rectangle(topLeft, btn.Bounds.Size);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void SetMaxButtonHover(bool hover)
+    {
+        var btn = GetVisibleMaximizeButton();
+        if (btn == null) return;
+        if (hover && !_trackingNcLeave)
+        {
+            // NCマウス離脱を受け取れるよう追跡を開始する
+            var tme = new TRACKMOUSEEVENT
+            {
+                cbSize = Marshal.SizeOf<TRACKMOUSEEVENT>(),
+                dwFlags = TME_LEAVE | TME_NONCLIENT,
+                hwndTrack = Handle,
+                dwHoverTime = 0,
+            };
+            TrackMouseEvent(ref tme);
+            _trackingNcLeave = true;
+        }
+        if (btn.SnapHover != hover)
+        {
+            btn.SnapHover = hover;
+            if (!hover) btn.SnapPressed = false;
+            btn.Owner?.Invalidate(btn.Bounds);
+        }
+    }
+
+    private void SetMaxButtonPressed(bool pressed)
+    {
+        var btn = GetVisibleMaximizeButton();
+        if (btn == null || btn.SnapPressed == pressed) return;
+        btn.SnapPressed = pressed;
+        btn.Owner?.Invalidate(btn.Bounds);
     }
 
     // ===== ショートカット =====
