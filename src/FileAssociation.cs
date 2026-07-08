@@ -20,6 +20,13 @@ internal static class FileAssociation
     private static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
     private const int SHCNE_ASSOCCHANGED = 0x08000000;
 
+    // IThumbnailProvider インターフェースの GUID (ShellEx サブキー名)
+    private const string ThumbnailProviderGuid = "{e357fccd-a995-4576-b01f-234630154e96}";
+    // Windows標準の画像サムネイルハンドラ (Photo Thumbnail Provider)。
+    // 画像ProgIDに登録すると、サムネイル系ビューでは画像サムネ、詳細/一覧ビューでは
+    // DefaultIcon(アプリアイコン)が表示される — 既定アプリにしてもサムネを維持できる。
+    private const string PhotoThumbnailProviderClsid = "{C7657C4A-9F68-40FA-A4DF-96BC08EB3551}";
+
     // 関連付け対象にできる拡張子 (画像 + 本アプリのファイル)
     public static IReadOnlyList<string> AssociableExtensions { get; } =
         [.. ImageDecoder.SupportedExtensions.Where(e => e != ".img"), ".micl", ".mics"];
@@ -62,7 +69,9 @@ internal static class FileAssociation
         var selected = new HashSet<string>(selectedExtensions, StringComparer.OrdinalIgnoreCase);
 
         // 1. ProgID (開くコマンド + アイコン)
-        WriteProgId(ImageProgId, Loc.T("Multi Image Canvas 画像"), exe);
+        // 画像ProgIDだけはサムネイルハンドラを併せて登録し、既定アプリにしても
+        // サムネイル表示を維持する (詳細/一覧ビューのみ DefaultIcon が使われる)。
+        WriteProgId(ImageProgId, Loc.T("Multi Image Canvas 画像"), exe, keepThumbnails: true);
         WriteProgId(CanvasProgId, Loc.T("Multi Image Canvas キャンバス"), exe);
         WriteProgId(SessionProgId, Loc.T("Multi Image Canvas セッション"), exe);
 
@@ -132,7 +141,7 @@ internal static class FileAssociation
         NotifyShell();
     }
 
-    private static void WriteProgId(string progId, string description, string exe)
+    private static void WriteProgId(string progId, string description, string exe, bool keepThumbnails = false)
     {
         using var k = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{progId}");
         k.SetValue("", description);
@@ -140,8 +149,23 @@ internal static class FileAssociation
         {
             icon.SetValue("", $"\"{exe}\",0");
         }
-        using var cmd = k.CreateSubKey(@"shell\open\command");
-        cmd.SetValue("", $"\"{exe}\" \"%1\"");
+        using (var cmd = k.CreateSubKey(@"shell\open\command"))
+        {
+            cmd.SetValue("", $"\"{exe}\" \"%1\"");
+        }
+
+        // 画像ProgID: Windows標準サムネイルハンドラを紐付け、サムネイル系ビューでは
+        // 画像サムネが出るようにする。詳細/一覧ビューでは DefaultIcon が使われる。
+        if (keepThumbnails)
+        {
+            using var thumb = k.CreateSubKey($@"ShellEx\{ThumbnailProviderGuid}");
+            thumb.SetValue("", PhotoThumbnailProviderClsid);
+        }
+        else
+        {
+            // 独自ファイル(.micl/.mics)は常にアプリアイコン: 誤った継承を残さない
+            k.DeleteSubKeyTree($@"ShellEx\{ThumbnailProviderGuid}", throwOnMissingSubKey: false);
+        }
     }
 
     private static void NotifyShell() => SHChangeNotify(SHCNE_ASSOCCHANGED, 0, IntPtr.Zero, IntPtr.Zero);
