@@ -232,6 +232,7 @@ internal sealed partial class MainForm : Form
         Shown += (_, _) =>
         {
             ApplyTreeTheme();
+            BeginInvoke(new Action(() => SetSidebarView(_sidebarView)));
             BeginInvoke(new Action(StartLoadQuickAccessExtras));
             BeginInvoke(new Action(() => _ = OpenStartupInputsAsync()));
 
@@ -333,7 +334,7 @@ internal sealed partial class MainForm : Form
 
         UpdateMenuShortcutTexts();
         SyncMenuState();
-        SetSidebarView(_sidebarView);
+        SetSidebarView(_sidebarView, loadThumbs: false);
     }
 
     private void SaveSession()
@@ -2079,14 +2080,14 @@ internal sealed partial class MainForm : Form
         _rightPanel.Controls.Add(titlePanel);
     }
 
-    private void SetSidebarView(string mode)
+    private void SetSidebarView(string mode, bool loadThumbs = true)
     {
         _sidebarView = mode;
         if (_treeArea != null) _treeArea.Visible = mode == "tree";
         if (_thumbs != null)
         {
             _thumbs.Visible = mode == "thumbs";
-            if (mode == "thumbs")
+            if (loadThumbs && mode == "thumbs")
             {
                 var folder = _lastFolderPath ?? KnownFolders.GetPicturesPath();
                 if (folder != null && _thumbs.CurrentFolder != folder) _thumbs.LoadFolder(folder);

@@ -306,15 +306,15 @@ internal sealed class ThumbnailView : Panel
                 _listView.Items.Add(new ListViewItem("⬆ 上へ", 0) { Tag = parent });
             }
 
-            foreach (var dir in Directory.EnumerateDirectories(folder).OrderBy(Path.GetFileName).Take(200))
+            foreach (var dir in Directory.EnumerateDirectories(folder).Take(200).OrderBy(Path.GetFileName))
             {
                 _listView.Items.Add(new ListViewItem(Path.GetFileName(dir), 0) { Tag = dir });
             }
 
             var imageFiles = Directory.EnumerateFiles(folder)
                 .Where(ImageDecoder.IsSupported)
-                .OrderBy(Path.GetFileName)
                 .Take(300)
+                .OrderBy(Path.GetFileName)
                 .ToList();
 
             foreach (var file in imageFiles)

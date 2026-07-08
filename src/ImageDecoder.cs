@@ -181,7 +181,7 @@ internal static class ImageDecoder
     // サムネイル生成 (縦横比維持・中央配置)
     public static Bitmap CreateThumbnail(string path, int size)
     {
-        using var src = Decode(path);
+        using var src = Decode(path, fixTransparency: false);
         var thumb = new Bitmap(size, size, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(thumb);
         g.Clear(Color.Transparent);
