@@ -54,6 +54,7 @@ internal sealed partial class MainForm : Form
     private const int WM_NCCALCSIZE = 0x0083;
     private const int WM_GETMINMAXINFO = 0x0024;
     private const int WM_NCHITTEST = 0x0084;
+    private const int WM_NCACTIVATE = 0x0086;
     private const int WM_NCMOUSEMOVE = 0x00A0;
     private const int WM_NCMOUSELEAVE = 0x02A2;
     private const int WM_NCLBUTTONDOWN = 0x00A1;
@@ -1638,6 +1639,7 @@ internal sealed partial class MainForm : Form
         _docTabs.Visible = true;
         _rightPanel.Visible = true;
         _overlayFrame.Visible = true;
+        EnsureTopBarOrder();
 
         RebuildDocTabs();
         SelectDocument(_docs.Count - 1);
@@ -1979,10 +1981,7 @@ internal sealed partial class MainForm : Form
         Controls.Add(_menuBar);
         BuildViewerBar();
         Controls.Add(_viewerBar);
-        Controls.SetChildIndex(_canvas, 0);
-        Controls.SetChildIndex(_viewerBar, 1);
-        Controls.SetChildIndex(_docTabs, 2);
-        Controls.SetChildIndex(_menuBar, 3);
+        EnsureTopBarOrder();
         BuildSessionTitleLabel();
 
         _rightPanel.BringToFront();
@@ -1992,6 +1991,14 @@ internal sealed partial class MainForm : Form
 
         _canvas.SizeChanged += (_, _) => { UpdateSidebarBounds(); UpdateViewerNavPanelBounds(); };
         UpdateSidebarBounds();
+    }
+
+    private void EnsureTopBarOrder()
+    {
+        Controls.SetChildIndex(_canvas, 0);
+        Controls.SetChildIndex(_viewerBar, 1);
+        Controls.SetChildIndex(_docTabs, 2);
+        Controls.SetChildIndex(_menuBar, 3);
     }
 
     private void BuildRightPanel()
@@ -3221,9 +3228,14 @@ internal sealed partial class MainForm : Form
 
         // 非クライアント枠を消し、ウィンドウ全体をクライアント領域にする。
         // WS_THICKFRAME を付けてもborderless外観を保つための要。
-        if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
+        if (m.Msg == WM_NCCALCSIZE)
         {
             m.Result = IntPtr.Zero;
+            return;
+        }
+        if (m.Msg == WM_NCACTIVATE)
+        {
+            m.Result = new IntPtr(1);
             return;
         }
 
