@@ -92,7 +92,7 @@ internal sealed partial class MainForm : Form
     private readonly Dictionary<string, ToolStripMenuItem> _actionMenuItems = [];
 
     private ToolStripMenuItem? _undoMi, _redoMi, _naturalMi, _topmostMi;
-    private ToolStripMenuItem? _overlayActiveMi, _clickThroughMi;
+    private ToolStripMenuItem? _overlayActiveMi, _clickThroughMi, _overlayFrameMi;
     private ToolStripMenuItem? _overlayMenuBtn;
     private ToolStripTrackBar? _opacityTrack;
     private ToolStripLabel? _opacityMenuLabel;
@@ -120,6 +120,7 @@ internal sealed partial class MainForm : Form
     // オーバーレイ設定パネル (歯車で開く。ファイル選択画面に重ねて表示)
     private readonly Panel _overlaySettingsPanel = new();
     private CheckBox? _ovlClickThroughCheck;
+    private CheckBox? _ovlFrameCheck;
     private Label? _ovlOpacityLabel;
     private TrackBar? _ovlOpacitySlider;
     private bool _syncingOverlayPanel;
@@ -127,6 +128,7 @@ internal sealed partial class MainForm : Form
     private OverlayForm? _overlayForm;
     private float _overlayOpacity = 1.0f;
     private bool _overlayClickThrough;
+    private bool _overlayFrameVisible = true;
 
     private bool _uiHidden;
     private int _sidebarWidth = 296;
@@ -298,6 +300,7 @@ internal sealed partial class MainForm : Form
             _canvas.InsertNaturalSize = s.InsertNaturalSize;
             _overlayOpacity = Math.Clamp(s.OverlayOpacity, 0.2f, 1f);
             _overlayClickThrough = s.OverlayClickThrough;
+            _overlayFrameVisible = s.OverlayFrameVisible;
             _sidebarView = s.SidebarView;
 
             // 前回のタブを復元
@@ -352,6 +355,7 @@ internal sealed partial class MainForm : Form
         InsertNaturalSize = _canvas.InsertNaturalSize,
         OverlayOpacity = _overlayOpacity,
         OverlayClickThrough = _overlayClickThrough,
+        OverlayFrameVisible = _overlayFrameVisible,
         BgOpacity = _canvas.BgOpacity,
         ActiveTab = _activeDocIndex,
         Tabs = _docs.Select(LayoutSerializer.ToDto).ToList(),
@@ -845,6 +849,7 @@ internal sealed partial class MainForm : Form
         _topmostMi = null;
         _overlayActiveMi = null;
         _clickThroughMi = null;
+        _overlayFrameMi = null;
         _overlayMenuBtn = null;
         _opacityTrack = null;
         _opacityMenuLabel = null;
@@ -1797,6 +1802,10 @@ internal sealed partial class MainForm : Form
         _clickThroughMi.Click += (_, _) => SetOverlayClickThrough(_clickThroughMi.Checked);
         menu.DropDownItems.Add(_clickThroughMi);
 
+        _overlayFrameMi = new ToolStripMenuItem("▣ " + Loc.T("オーバーレイ外枠")) { CheckOnClick = true, Checked = _overlayFrameVisible };
+        _overlayFrameMi.Click += (_, _) => SetOverlayFrameVisible(_overlayFrameMi.Checked);
+        menu.DropDownItems.Add(_overlayFrameMi);
+
         menu.DropDownItems.Add(new ToolStripSeparator());
 
         _opacityMenuLabel = new ToolStripLabel($"{Loc.T("オーバーレイ透過率")}: {(int)(_overlayOpacity * 100)}%")
@@ -2327,6 +2336,21 @@ internal sealed partial class MainForm : Form
             SetOverlayClickThrough(_ovlClickThroughCheck.Checked);
         };
 
+        _ovlFrameCheck = new CheckBox
+        {
+            Text = Loc.T("オーバーレイ外枠"),
+            Dock = DockStyle.Top,
+            Height = 32,
+            ForeColor = t.TextPrimary,
+            BackColor = t.Surface,
+            TabStop = false,
+        };
+        _ovlFrameCheck.CheckedChanged += (_, _) =>
+        {
+            if (_syncingOverlayPanel) return;
+            SetOverlayFrameVisible(_ovlFrameCheck.Checked);
+        };
+
         _ovlOpacityLabel = new Label
         {
             Text = $"{Loc.T("オーバーレイ透過率")}: 100%",
@@ -2354,6 +2378,7 @@ internal sealed partial class MainForm : Form
         // Dock=Top は後から追加したものが上に積まれるため逆順で追加する
         _overlaySettingsPanel.Controls.Add(_ovlOpacitySlider);
         _overlaySettingsPanel.Controls.Add(_ovlOpacityLabel);
+        _overlaySettingsPanel.Controls.Add(_ovlFrameCheck);
         _overlaySettingsPanel.Controls.Add(_ovlClickThroughCheck);
         _overlaySettingsPanel.Controls.Add(header);
     }
@@ -2381,6 +2406,7 @@ internal sealed partial class MainForm : Form
         try
         {
             if (_ovlClickThroughCheck != null) _ovlClickThroughCheck.Checked = _overlayClickThrough;
+            if (_ovlFrameCheck != null) _ovlFrameCheck.Checked = _overlayFrameVisible;
             if (_ovlOpacitySlider != null) _ovlOpacitySlider.Value = (int)(_overlayOpacity * 100);
             if (_ovlOpacityLabel != null) _ovlOpacityLabel.Text = $"{Loc.T("オーバーレイ透過率")}: {(int)(_overlayOpacity * 100)}%";
         }
@@ -2933,6 +2959,7 @@ internal sealed partial class MainForm : Form
         _canvas.InsertNaturalSize = session.InsertNaturalSize;
         _overlayOpacity = Math.Clamp(session.OverlayOpacity, 0.2f, 1f);
         _overlayClickThrough = session.OverlayClickThrough;
+        _overlayFrameVisible = session.OverlayFrameVisible;
         _sidebarView = session.SidebarView;
 
         for (int i = 0; i < session.Tabs.Count; i++)
@@ -3047,7 +3074,7 @@ internal sealed partial class MainForm : Form
             }
 
             var clientRect = _canvas.RectangleToScreen(_canvas.ClientRectangle);
-            _overlayForm = new OverlayForm(_canvas, _overlayClickThrough, _overlayOpacity, OverlayAnimations.Parse(_overlayAnimation))
+            _overlayForm = new OverlayForm(_canvas, _overlayClickThrough, _overlayOpacity, OverlayAnimations.Parse(_overlayAnimation), _overlayFrameVisible)
             {
                 StartPosition = FormStartPosition.Manual,
                 Location = new Point(clientRect.Location.X + 20, clientRect.Location.Y + 20),
@@ -3082,6 +3109,7 @@ internal sealed partial class MainForm : Form
     private void UpdateOverlayButtonsState(bool active)
     {
         if (_overlayActiveMi != null) _overlayActiveMi.Checked = active;
+        if (_overlayFrameMi != null) _overlayFrameMi.Checked = _overlayFrameVisible;
         UpdateSidebarOverlayButtonState(active);
         if (_overlaySettingsPanel.Visible) SyncOverlaySettingsPanel();
     }
@@ -3118,6 +3146,15 @@ internal sealed partial class MainForm : Form
         if (_clickThroughMi != null) _clickThroughMi.Checked = value;
         if (_overlayForm != null) _overlayForm.ClickThrough = value;
         if (_overlaySettingsPanel.Visible) SyncOverlaySettingsPanel();
+    }
+
+    private void SetOverlayFrameVisible(bool value)
+    {
+        _overlayFrameVisible = value;
+        if (_overlayFrameMi != null) _overlayFrameMi.Checked = value;
+        if (_overlayForm != null) _overlayForm.ShowFrame = value;
+        if (_overlaySettingsPanel.Visible) SyncOverlaySettingsPanel();
+        if (IsHandleCreated) SaveSession();
     }
 
     // ===== グローバルホットキー =====

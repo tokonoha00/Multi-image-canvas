@@ -38,6 +38,10 @@ internal static class FileAssociation
         _ => ImageProgId,
     };
 
+    public static bool IsAppSpecificExtension(string ext) =>
+        string.Equals(ext, ".micl", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(ext, ".mics", StringComparison.OrdinalIgnoreCase);
+
     private static string? ExePath => Environment.ProcessPath;
 
     // 現在このアプリに登録済みの拡張子

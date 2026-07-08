@@ -32,6 +32,7 @@ internal sealed class SettingsForm : Form
     private readonly CheckedListBox _assocList = new();
     private Label? _overlayHotkeyHint;
     private Button? _applyBtn;
+    private bool _useAssociationInitialDefaults = true;
 
     private readonly ListBox _nav = new();
     private readonly Panel _pageHost = new();
@@ -440,7 +441,7 @@ internal sealed class SettingsForm : Form
         _assocList.Items.Clear();
         foreach (var ext in FileAssociation.AssociableExtensions)
         {
-            _assocList.Items.Add(ext, registered.Contains(ext));
+            _assocList.Items.Add(ext, registered.Contains(ext) || (_useAssociationInitialDefaults && FileAssociation.IsAppSpecificExtension(ext)));
         }
         _assocList.EndUpdate();
     }
@@ -466,6 +467,7 @@ internal sealed class SettingsForm : Form
         try
         {
             FileAssociation.UnregisterAll();
+            _useAssociationInitialDefaults = false;
             RefreshAssociationList();
             MessageBox.Show(this, Loc.T("ファイル関連付けをすべて解除しました。"),
                 Loc.T("ファイル関連付け"), MessageBoxButtons.OK, MessageBoxIcon.Information);

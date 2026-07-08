@@ -15,6 +15,7 @@ internal sealed class SessionData
     public bool InsertNaturalSize { get; set; }
     public float OverlayOpacity { get; set; } = 1.0f;
     public bool OverlayClickThrough { get; set; }
+    public bool OverlayFrameVisible { get; set; } = true;
     public float BgOpacity { get; set; } = 1.0f;
     public int ActiveTab { get; set; }
     public List<LayoutDto> Tabs { get; set; } = [];

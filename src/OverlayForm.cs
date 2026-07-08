@@ -76,13 +76,15 @@ internal sealed class OverlayForm : Form
     private readonly float _targetOpacity;
     private readonly int _gridSeed;
     private readonly OverlayAnimationKind _animation;
+    private bool _showFrame;
     private Point _baseLocation;
 
-    public OverlayForm(CanvasSurface canvas, bool clickThrough, float opacity, OverlayAnimationKind animation = OverlayAnimationKind.Blocks)
+    public OverlayForm(CanvasSurface canvas, bool clickThrough, float opacity, OverlayAnimationKind animation = OverlayAnimationKind.Blocks, bool showFrame = true)
     {
         _canvas = canvas;
         _clickThrough = clickThrough;
         _animation = animation;
+        _showFrame = showFrame;
 
         FormBorderStyle = FormBorderStyle.None;
         TopMost = true;
@@ -137,6 +139,17 @@ internal sealed class OverlayForm : Form
                 _animTimer.Start();
             }
         };
+    }
+
+    public bool ShowFrame
+    {
+        get => _showFrame;
+        set
+        {
+            if (_showFrame == value) return;
+            _showFrame = value;
+            Invalidate();
+        }
     }
 
     protected override CreateParams CreateParams
@@ -195,19 +208,21 @@ internal sealed class OverlayForm : Form
             }
             g.DrawImage(item.Image, item.GetDrawPoints(), item.Crop, GraphicsUnit.Pixel, attrs);
 
-            // グラデーション外枠
-            var c = item.GetCornersWorld();
-            float penWidth = 4.0f / zoom;
-            var bounds = item.GetWorldBounds();
-            if (bounds.Width > 1 && bounds.Height > 1)
+            if (_showFrame)
             {
-                using var brush = new LinearGradientBrush(
-                    bounds,
-                    Color.FromArgb(90, 90, 90),
-                    Color.FromArgb(15, 15, 15),
-                    LinearGradientMode.ForwardDiagonal);
-                using var pen = new Pen(brush, penWidth);
-                g.DrawPolygon(pen, [c[0], c[1], c[3], c[2]]);
+                var c = item.GetCornersWorld();
+                float penWidth = 4.0f / zoom;
+                var bounds = item.GetWorldBounds();
+                if (bounds.Width > 1 && bounds.Height > 1)
+                {
+                    using var brush = new LinearGradientBrush(
+                        bounds,
+                        Color.FromArgb(90, 90, 90),
+                        Color.FromArgb(15, 15, 15),
+                        LinearGradientMode.ForwardDiagonal);
+                    using var pen = new Pen(brush, penWidth);
+                    g.DrawPolygon(pen, [c[0], c[1], c[3], c[2]]);
+                }
             }
         }
 

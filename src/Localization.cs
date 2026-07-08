@@ -57,6 +57,7 @@ internal static class Loc
         ["オーバーレイ有効化"] = "Enable overlay",
         ["クリック透過"] = "Click-through",
         ["オーバーレイ透過率"] = "Overlay opacity",
+        ["オーバーレイ外枠"] = "Overlay frame",
         ["オーバーレイ不透明度を上げる"] = "Increase overlay opacity",
         ["オーバーレイ不透明度を下げる"] = "Decrease overlay opacity",
         ["オーバーレイ設定"] = "Overlay settings",
