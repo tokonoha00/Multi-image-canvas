@@ -168,7 +168,7 @@ internal sealed partial class MainForm : Form
     private Label? _gifFrameLabel;
     private bool _syncingGifUi;
     private readonly Panel _viewerNavPanel = new();
-    private FlowLayoutPanel? _navFlow;
+    private Panel? _navFlow;
     private FlowLayoutPanel? _pageGroup;
     private Label? _viewerPageLabel;
     private Button? _viewerPrevBtn, _viewerNextBtn, _viewerFullscreenBtn;
@@ -250,6 +250,7 @@ internal sealed partial class MainForm : Form
             // ビュアーモードはセッションに一切触れずに閉じる (確認ダイアログも出さない)
             if (_viewerMode)
             {
+                SaveViewerWindowPlacement();
                 ToggleOverlayMode(false);
                 return;
             }
@@ -387,6 +388,8 @@ internal sealed partial class MainForm : Form
             ImageImportScalePercent = (int)Math.Round(_canvas.ImageImportScale * 100),
             Language = Loc.Normalize(_language),
             OverlayAnimation = _overlayAnimation,
+            ViewerWindowBounds = _appSettings.ViewerWindowBounds,
+            ViewerMaximized = _appSettings.ViewerMaximized,
         };
         AppSettingsStore.Save(_appSettings);
     }
@@ -1165,6 +1168,7 @@ internal sealed partial class MainForm : Form
         _canvas.InsertNaturalSize = true; // 原寸で読み込み、全体表示でフィットさせる
 
         MinimumSize = new Size(200, 200); // ビュアーは小さく畳めるように
+        RestoreViewerWindowPlacement();
 
         _menuBar.Visible = false;
         _sessionTitleLabel.Visible = false;
@@ -1182,6 +1186,36 @@ internal sealed partial class MainForm : Form
             if (_viewerTitle != null) _viewerTitle.Text = Path.GetFileName(first);
             Text = Path.GetFileName(first) + " - Multi Image Canvas";
         }
+    }
+
+    private void RestoreViewerWindowPlacement()
+    {
+        if (_appSettings.ViewerWindowBounds is not { Length: 4 } saved || saved[2] <= 0 || saved[3] <= 0) return;
+
+        var bounds = new Rectangle(saved[0], saved[1], saved[2], saved[3]);
+        var area = Screen.FromRectangle(bounds).WorkingArea;
+        bounds.Width = Math.Min(Math.Max(bounds.Width, MinimumSize.Width), area.Width);
+        bounds.Height = Math.Min(Math.Max(bounds.Height, MinimumSize.Height), area.Height);
+        bounds.X = Math.Clamp(bounds.X, area.Left, area.Right - bounds.Width);
+        bounds.Y = Math.Clamp(bounds.Y, area.Top, area.Bottom - bounds.Height);
+
+        StartPosition = FormStartPosition.Manual;
+        Bounds = bounds;
+        if (_appSettings.ViewerMaximized) WindowState = FormWindowState.Maximized;
+    }
+
+    private void SaveViewerWindowPlacement()
+    {
+        var bounds = _viewerFullscreen
+            ? _viewerRestoreBounds
+            : WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+
+        _appSettings.ViewerWindowBounds = [bounds.X, bounds.Y, bounds.Width, bounds.Height];
+        _appSettings.ViewerMaximized = _viewerFullscreen
+            ? _viewerRestoreWindowState == FormWindowState.Maximized
+            : WindowState == FormWindowState.Maximized;
+        AppSettingsStore.Save(_appSettings);
     }
 
     private void BuildViewerBar()
@@ -1275,13 +1309,9 @@ internal sealed partial class MainForm : Form
         _viewerNavPanel.Padding = new Padding(10, 8, 10, 8);
         _viewerNavPanel.Visible = false;
 
-        var layout = new FlowLayoutPanel
+        var layout = new Panel
         {
             Location = new Point(_viewerNavPanel.Padding.Left, _viewerNavPanel.Padding.Top),
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
             BackColor = Color.Transparent,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
@@ -1439,27 +1469,44 @@ internal sealed partial class MainForm : Form
         if (_canvas.ClientSize.Width <= 0 || _canvas.ClientSize.Height <= 0) return;
 
         int availableWidth = Math.Max(120, _canvas.ClientSize.Width - 24);
-        _navFlow.WrapContents = false;
-        _navFlow.MaximumSize = Size.Empty;
-        _navFlow.PerformLayout();
-        var pref = _navFlow.PreferredSize;
-
         int contentMaxWidth = Math.Max(1, availableWidth - _viewerNavPanel.Padding.Horizontal);
-        if (pref.Width > contentMaxWidth)
-        {
-            _navFlow.WrapContents = true;
-            _navFlow.MaximumSize = new Size(contentMaxWidth, 0);
-            _navFlow.PerformLayout();
-            pref = _navFlow.PreferredSize;
-        }
+        int gap = 8;
 
-        int width = Math.Min(pref.Width + _viewerNavPanel.Padding.Horizontal, availableWidth);
-        int height = Math.Max(50, pref.Height + _viewerNavPanel.Padding.Vertical);
+        var gifSize = _gifPanel?.Visible == true ? _gifPanel.PreferredSize : Size.Empty;
+        var pageSize = _pageGroup?.Visible == true ? _pageGroup.PreferredSize : Size.Empty;
+        var fullSize = _viewerFullscreenBtn?.Visible == true ? _viewerFullscreenBtn.Size : Size.Empty;
+        int height = Math.Max(50, Math.Max(Math.Max(gifSize.Height, pageSize.Height), fullSize.Height) + _viewerNavPanel.Padding.Vertical);
+
+        bool hasGif = gifSize.Width > 0;
+        bool hasPage = pageSize.Width > 0;
+        bool hasFull = fullSize.Width > 0;
+        int sideWidth = Math.Max(gifSize.Width, fullSize.Width);
+        int desiredContentWidth = hasPage
+            ? sideWidth * 2 + pageSize.Width + gap * 2
+            : (hasGif ? gifSize.Width + gap : 0) + (hasFull ? fullSize.Width : 0);
+        int contentWidth = Math.Min(Math.Max(desiredContentWidth, fullSize.Width), contentMaxWidth);
+        int width = contentWidth + _viewerNavPanel.Padding.Horizontal;
 
         _viewerNavPanel.Size = new Size(width, height);
         _viewerNavPanel.Location = new Point(
             (_canvas.ClientSize.Width - width) / 2,
             _canvas.ClientSize.Height - height - 20);
+
+        _navFlow.Bounds = new Rectangle(_viewerNavPanel.Padding.Left, _viewerNavPanel.Padding.Top, contentWidth, height - _viewerNavPanel.Padding.Vertical);
+
+        if (desiredContentWidth <= contentMaxWidth && hasPage)
+        {
+            if (_gifPanel != null) _gifPanel.Location = new Point(0, 0);
+            if (_pageGroup != null) _pageGroup.Location = new Point((contentWidth - pageSize.Width) / 2, 0);
+            if (_viewerFullscreenBtn != null) _viewerFullscreenBtn.Location = new Point(contentWidth - fullSize.Width, 0);
+        }
+        else
+        {
+            int x = 0;
+            if (_gifPanel?.Visible == true) { _gifPanel.Location = new Point(x, 0); x += gifSize.Width + gap; }
+            if (_pageGroup?.Visible == true) { _pageGroup.Location = new Point(x, 0); x += pageSize.Width + gap; }
+            if (_viewerFullscreenBtn != null) _viewerFullscreenBtn.Location = new Point(Math.Min(x, Math.Max(0, contentWidth - fullSize.Width)), 0);
+        }
         _viewerNavPanel.BringToFront();
     }
 

@@ -55,8 +55,6 @@ internal sealed class OverlayForm : Form
     private const int WS_EX_TRANSPARENT = 0x20;
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int WS_EX_TOOLWINDOW = 0x80;
-    private const int WM_NCHITTEST = 0x0084;
-    private const int HTTRANSPARENT = -1;
 
     private bool _isDraggingWindow;
     private Point _dragMouseStart;
@@ -74,6 +72,7 @@ internal sealed class OverlayForm : Form
     }
 
     private readonly System.Windows.Forms.Timer _animTimer = new() { Interval = 16 };
+    private readonly System.Windows.Forms.Timer _hitTestTimer = new() { Interval = 16 };
     private float _animProgress;
     private readonly float _targetOpacity;
     private readonly int _gridSeed;
@@ -125,9 +124,13 @@ internal sealed class OverlayForm : Form
             Invalidate();
         };
 
+        _hitTestTimer.Tick += (_, _) => ApplyClickThrough();
+        FormClosed += (_, _) => _hitTestTimer.Stop();
+
         Shown += (s, e) =>
         {
             ApplyClickThrough();
+            _hitTestTimer.Start();
             _baseLocation = Location;
 
             if (_animation == OverlayAnimationKind.None)
@@ -172,7 +175,9 @@ internal sealed class OverlayForm : Form
     {
         if (!IsHandleCreated) return;
         int extendedStyle = GetWindowLong(Handle, GWL_EXSTYLE);
-        if (_clickThrough)
+        bool passThrough = _clickThrough || (!_isDraggingWindow && !HitVisibleOverlayPixel(PointToClient(Cursor.Position)));
+        if (((extendedStyle & WS_EX_TRANSPARENT) != 0) == passThrough) return;
+        if (passThrough)
         {
             SetWindowLong(Handle, GWL_EXSTYLE, extendedStyle | WS_EX_TRANSPARENT);
         }
@@ -287,6 +292,7 @@ internal sealed class OverlayForm : Form
                 _dragMouseStart = Cursor.Position;
                 _dragWindowStart = Location;
                 Capture = true;
+                ApplyClickThrough();
             }
         }
     }
@@ -306,6 +312,7 @@ internal sealed class OverlayForm : Form
     {
         _isDraggingWindow = false;
         Capture = false;
+        ApplyClickThrough();
     }
 
     private void OverlayForm_DoubleClick(object? sender, EventArgs e)
@@ -316,6 +323,8 @@ internal sealed class OverlayForm : Form
 
     private bool HitVisibleOverlayPixel(Point client)
     {
+        if (!ClientRectangle.Contains(client)) return false;
+
         var offset = _canvas.ScrollOffset;
         var zoom = _canvas.Zoom;
         var world = new PointF((client.X + offset.X) / zoom, (client.Y + offset.Y) / zoom);
@@ -348,15 +357,6 @@ internal sealed class OverlayForm : Form
     {
         const int WM_MOUSEACTIVATE = 0x0021;
         const int MA_ACTIVATE = 1;
-        if (m.Msg == WM_NCHITTEST)
-        {
-            var screen = new Point((short)(m.LParam.ToInt64() & 0xffff), (short)((m.LParam.ToInt64() >> 16) & 0xffff));
-            if (_clickThrough || !HitVisibleOverlayPixel(PointToClient(screen)))
-            {
-                m.Result = HTTRANSPARENT;
-                return;
-            }
-        }
         if (m.Msg == WM_MOUSEACTIVATE)
         {
             m.Result = MA_ACTIVATE;
