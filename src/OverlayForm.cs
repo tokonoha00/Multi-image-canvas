@@ -72,6 +72,7 @@ internal sealed class OverlayForm : Form
     }
 
     private readonly System.Windows.Forms.Timer _animTimer = new() { Interval = 16 };
+    private readonly System.Windows.Forms.Timer _hitTestTimer = new() { Interval = 16 };
     private float _animProgress;
     private readonly float _targetOpacity;
     private readonly int _gridSeed;
@@ -123,9 +124,13 @@ internal sealed class OverlayForm : Form
             Invalidate();
         };
 
+        _hitTestTimer.Tick += (_, _) => ApplyClickThrough();
+        FormClosed += (_, _) => _hitTestTimer.Stop();
+
         Shown += (s, e) =>
         {
             ApplyClickThrough();
+            _hitTestTimer.Start();
             _baseLocation = Location;
 
             if (_animation == OverlayAnimationKind.None)
@@ -170,7 +175,9 @@ internal sealed class OverlayForm : Form
     {
         if (!IsHandleCreated) return;
         int extendedStyle = GetWindowLong(Handle, GWL_EXSTYLE);
-        if (_clickThrough)
+        bool passThrough = _clickThrough || (!_isDraggingWindow && !HitVisibleOverlayPixel(PointToClient(Cursor.Position)));
+        if (((extendedStyle & WS_EX_TRANSPARENT) != 0) == passThrough) return;
+        if (passThrough)
         {
             SetWindowLong(Handle, GWL_EXSTYLE, extendedStyle | WS_EX_TRANSPARENT);
         }
@@ -285,6 +292,7 @@ internal sealed class OverlayForm : Form
                 _dragMouseStart = Cursor.Position;
                 _dragWindowStart = Location;
                 Capture = true;
+                ApplyClickThrough();
             }
         }
     }
@@ -304,12 +312,45 @@ internal sealed class OverlayForm : Form
     {
         _isDraggingWindow = false;
         Capture = false;
+        ApplyClickThrough();
     }
 
     private void OverlayForm_DoubleClick(object? sender, EventArgs e)
     {
         if (_clickThrough) return;
         Close();
+    }
+
+    private bool HitVisibleOverlayPixel(Point client)
+    {
+        if (!ClientRectangle.Contains(client)) return false;
+
+        var offset = _canvas.ScrollOffset;
+        var zoom = _canvas.Zoom;
+        var world = new PointF((client.X + offset.X) / zoom, (client.Y + offset.Y) / zoom);
+
+        foreach (var item in _canvas.Items.Reverse())
+        {
+            if (!item.Visible || !item.HitTest(world)) continue;
+            if (HitVisibleItemPixel(item, world)) return true;
+        }
+        return false;
+    }
+
+    private static bool HitVisibleItemPixel(CanvasItem item, PointF world)
+    {
+        var local = item.ToLocal(world);
+        if (item.Dest.Width <= 0 || item.Dest.Height <= 0) return false;
+
+        var u = (local.X - item.Dest.X) / item.Dest.Width;
+        var v = (local.Y - item.Dest.Y) / item.Dest.Height;
+        if (u < 0f || u > 1f || v < 0f || v > 1f) return false;
+        if (item.FlipH) u = 1f - u;
+        if (item.FlipV) v = 1f - v;
+
+        var sx = (int)Math.Clamp(item.Crop.X + item.Crop.Width * u, 0, item.Image.Width - 1);
+        var sy = (int)Math.Clamp(item.Crop.Y + item.Crop.Height * v, 0, item.Image.Height - 1);
+        return item.Image is not Bitmap bmp || bmp.GetPixel(sx, sy).A > 24;
     }
 
     protected override void WndProc(ref Message m)
