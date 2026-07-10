@@ -1472,14 +1472,14 @@ internal sealed partial class MainForm : Form
         int contentMaxWidth = Math.Max(1, availableWidth - _viewerNavPanel.Padding.Horizontal);
         int gap = 8;
 
-        var gifSize = _gifPanel?.Visible == true ? _gifPanel.PreferredSize : Size.Empty;
-        var pageSize = _pageGroup?.Visible == true ? _pageGroup.PreferredSize : Size.Empty;
-        var fullSize = _viewerFullscreenBtn?.Visible == true ? _viewerFullscreenBtn.Size : Size.Empty;
+        bool hasGif = _canvas.ViewerFrameCount > 1;
+        bool hasPage = _viewerFiles.Count > 1;
+        bool hasFull = _viewerFullscreenBtn != null;
+        var gifSize = hasGif && _gifPanel != null ? _gifPanel.PreferredSize : Size.Empty;
+        var pageSize = hasPage && _pageGroup != null ? _pageGroup.PreferredSize : Size.Empty;
+        var fullSize = _viewerFullscreenBtn?.Size ?? Size.Empty;
         int height = Math.Max(50, Math.Max(Math.Max(gifSize.Height, pageSize.Height), fullSize.Height) + _viewerNavPanel.Padding.Vertical);
 
-        bool hasGif = gifSize.Width > 0;
-        bool hasPage = pageSize.Width > 0;
-        bool hasFull = fullSize.Width > 0;
         int sideWidth = Math.Max(gifSize.Width, fullSize.Width);
         int desiredContentWidth = hasPage
             ? sideWidth * 2 + pageSize.Width + gap * 2
@@ -1503,8 +1503,8 @@ internal sealed partial class MainForm : Form
         else
         {
             int x = 0;
-            if (_gifPanel?.Visible == true) { _gifPanel.Location = new Point(x, 0); x += gifSize.Width + gap; }
-            if (_pageGroup?.Visible == true) { _pageGroup.Location = new Point(x, 0); x += pageSize.Width + gap; }
+            if (hasGif && _gifPanel != null) { _gifPanel.Location = new Point(x, 0); x += gifSize.Width + gap; }
+            if (hasPage && _pageGroup != null) { _pageGroup.Location = new Point(x, 0); x += pageSize.Width + gap; }
             if (_viewerFullscreenBtn != null) _viewerFullscreenBtn.Location = new Point(Math.Min(x, Math.Max(0, contentWidth - fullSize.Width)), 0);
         }
         _viewerNavPanel.BringToFront();
@@ -1536,6 +1536,7 @@ internal sealed partial class MainForm : Form
         _lastViewerActivity = DateTime.UtcNow;
         _lastCursorScreenPos = Cursor.Position;
         _viewerNavPanel.Visible = true;
+        UpdateViewerNavPanelBounds();
         _viewerNavPanel.BringToFront();
         _viewerChromeOpacity = 1f;
         ApplyViewerNavOpacity(_viewerChromeOpacity);
