@@ -250,6 +250,7 @@ internal sealed partial class MainForm : Form
             // ビュアーモードはセッションに一切触れずに閉じる (確認ダイアログも出さない)
             if (_viewerMode)
             {
+                SaveViewerWindowPlacement();
                 ToggleOverlayMode(false);
                 return;
             }
@@ -387,6 +388,8 @@ internal sealed partial class MainForm : Form
             ImageImportScalePercent = (int)Math.Round(_canvas.ImageImportScale * 100),
             Language = Loc.Normalize(_language),
             OverlayAnimation = _overlayAnimation,
+            ViewerWindowBounds = _appSettings.ViewerWindowBounds,
+            ViewerMaximized = _appSettings.ViewerMaximized,
         };
         AppSettingsStore.Save(_appSettings);
     }
@@ -1165,6 +1168,7 @@ internal sealed partial class MainForm : Form
         _canvas.InsertNaturalSize = true; // 原寸で読み込み、全体表示でフィットさせる
 
         MinimumSize = new Size(200, 200); // ビュアーは小さく畳めるように
+        RestoreViewerWindowPlacement();
 
         _menuBar.Visible = false;
         _sessionTitleLabel.Visible = false;
@@ -1182,6 +1186,36 @@ internal sealed partial class MainForm : Form
             if (_viewerTitle != null) _viewerTitle.Text = Path.GetFileName(first);
             Text = Path.GetFileName(first) + " - Multi Image Canvas";
         }
+    }
+
+    private void RestoreViewerWindowPlacement()
+    {
+        if (_appSettings.ViewerWindowBounds is not { Length: 4 } saved || saved[2] <= 0 || saved[3] <= 0) return;
+
+        var bounds = new Rectangle(saved[0], saved[1], saved[2], saved[3]);
+        var area = Screen.FromRectangle(bounds).WorkingArea;
+        bounds.Width = Math.Min(Math.Max(bounds.Width, MinimumSize.Width), area.Width);
+        bounds.Height = Math.Min(Math.Max(bounds.Height, MinimumSize.Height), area.Height);
+        bounds.X = Math.Clamp(bounds.X, area.Left, area.Right - bounds.Width);
+        bounds.Y = Math.Clamp(bounds.Y, area.Top, area.Bottom - bounds.Height);
+
+        StartPosition = FormStartPosition.Manual;
+        Bounds = bounds;
+        if (_appSettings.ViewerMaximized) WindowState = FormWindowState.Maximized;
+    }
+
+    private void SaveViewerWindowPlacement()
+    {
+        var bounds = _viewerFullscreen
+            ? _viewerRestoreBounds
+            : WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+
+        _appSettings.ViewerWindowBounds = [bounds.X, bounds.Y, bounds.Width, bounds.Height];
+        _appSettings.ViewerMaximized = _viewerFullscreen
+            ? _viewerRestoreWindowState == FormWindowState.Maximized
+            : WindowState == FormWindowState.Maximized;
+        AppSettingsStore.Save(_appSettings);
     }
 
     private void BuildViewerBar()

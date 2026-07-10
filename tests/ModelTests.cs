@@ -1,10 +1,24 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Text.Json;
 using MultiImageCanvas;
 using Xunit;
 
 namespace MultiImageCanvas.Tests;
+
+public class AppSettingsTests
+{
+    [Fact]
+    public void ViewerWindowPlacement_RoundTrips()
+    {
+        var settings = new AppSettingsData { ViewerWindowBounds = [120, 80, 900, 600], ViewerMaximized = true };
+        var loaded = JsonSerializer.Deserialize<AppSettingsData>(JsonSerializer.Serialize(settings))!;
+
+        Assert.Equal(settings.ViewerWindowBounds, loaded.ViewerWindowBounds);
+        Assert.True(loaded.ViewerMaximized);
+    }
+}
 
 public class GeometryTests
 {
