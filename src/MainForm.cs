@@ -183,6 +183,10 @@ internal sealed partial class MainForm : Form
     private readonly object _viewerPreloadLock = new();
     private readonly Dictionary<string, Task<Image>> _viewerPreloads = new(StringComparer.OrdinalIgnoreCase);
     private int _viewerOpenVersion;
+    private ArchiveImageSource? _archiveSource;
+    private readonly Panel _archiveBrowserPanel = new();
+    private readonly TextBox _archiveSearchBox = new();
+    private readonly TreeView _archiveTree = new();
     private Rectangle _viewerRestoreBounds;
     private FormWindowState _viewerRestoreWindowState;
     private Padding _viewerRestorePadding;
@@ -312,6 +316,10 @@ internal sealed partial class MainForm : Form
                     try
                     {
                         var doc = LayoutSerializer.FromDto(s.Tabs[i], i < s.TabFilePaths.Count ? s.TabFilePaths[i] : null);
+                        if (s.OverlayLocations is { } locations && i < locations.Count && locations[i] is { Length: 2 } location)
+                        {
+                            doc.OverlayLocation = new Point(location[0], location[1]);
+                        }
                         AddDocument(doc, select: false);
                     }
                     catch
@@ -346,7 +354,7 @@ internal sealed partial class MainForm : Form
         SessionStore.Save(CreateSessionData());
     }
 
-    private SessionData CreateSessionData() => new()
+    private SessionData CreateSessionData(bool includeOverlayLocations = true) => new()
     {
         WindowBounds = WindowState == FormWindowState.Normal
             ? [Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height]
@@ -360,6 +368,9 @@ internal sealed partial class MainForm : Form
         BgOpacity = _canvas.BgOpacity,
         ActiveTab = _activeDocIndex,
         Tabs = _docs.Select(LayoutSerializer.ToDto).ToList(),
+        OverlayLocations = includeOverlayLocations
+            ? _docs.Select(d => d.OverlayLocation is { } p ? new[] { p.X, p.Y } : null).ToList()
+            : null,
         TabFilePaths = _docs.Select(d => d.FilePath).ToList(),
     };
 
@@ -423,9 +434,11 @@ internal sealed partial class MainForm : Form
     private void SelectDocument(int index)
     {
         if (index < 0 || index >= _docs.Count) return;
+        if (_overlayForm != null) StoreOverlayLocation(ActiveDoc);
         _activeDocIndex = index;
         var doc = _docs[index];
         _canvas.Document = doc;
+        if (_overlayForm != null) PositionOverlayForDocument(doc);
         _layers?.AttachDocument(doc);
         RebuildDocTabs();
         SyncMenuState();
@@ -943,12 +956,16 @@ internal sealed partial class MainForm : Form
 
     // ===== ビュアーモード =====
 
-    // 起動引数が「存在する画像ファイルのみ」の場合はビュアーとして起動する
+    // 起動引数が「存在する画像または対応圧縮ファイルのみ」の場合はビュアーとして起動する
     // (.mics/.micl やフォルダ、URLが含まれる場合は通常の編集画面)
     private static bool DetectViewerMode(string[] args)
     {
         var inputs = args.Select(a => a.Trim().Trim('"')).Where(a => !string.IsNullOrWhiteSpace(a)).ToList();
         if (inputs.Count == 0) return false;
+        if (inputs.Any(ArchiveImageSource.IsSupportedArchivePath))
+        {
+            return inputs.Count == 1 && File.Exists(inputs[0]) && ArchiveImageSource.IsSupportedArchivePath(inputs[0]);
+        }
         return inputs.All(a => File.Exists(a) && ImageDecoder.IsSupported(a));
     }
 
@@ -958,6 +975,12 @@ internal sealed partial class MainForm : Form
         {
             var first = _startupArgs.Select(a => a.Trim().Trim('"')).FirstOrDefault(File.Exists);
             if (first == null) return;
+            if (ArchiveImageSource.IsSupportedArchivePath(first))
+            {
+                await OpenArchiveViewerAsync(first);
+                ShowViewerChrome();
+                return;
+            }
             InitViewerFileList(first);
             await OpenViewerFileAsync(first, ++_viewerOpenVersion);
             ShowViewerChrome();
@@ -969,6 +992,8 @@ internal sealed partial class MainForm : Form
 
     private void InitViewerFileList(string path)
     {
+        _archiveSource = null;
+        HideArchiveBrowser();
         _viewerCurrentPath = path;
         _viewerFiles = [];
         _viewerFileIndex = -1;
@@ -1026,12 +1051,12 @@ internal sealed partial class MainForm : Form
         _canvas.ShutdownViewerAnimation();
         if (ActiveDoc is not { } doc)
         {
-            doc = new CanvasDocument(Path.GetFileNameWithoutExtension(path));
+            doc = new CanvasDocument(Path.GetFileNameWithoutExtension(path.Replace('/', Path.DirectorySeparatorChar)));
             AddDocument(doc, select: true, save: false);
         }
         else
         {
-            doc.Name = Path.GetFileNameWithoutExtension(path);
+            doc.Name = Path.GetFileNameWithoutExtension(path.Replace('/', Path.DirectorySeparatorChar));
         }
         disposeLater = _canvas.ReplaceViewerImage(image, path);
         _canvas.Select(null);
@@ -1041,8 +1066,9 @@ internal sealed partial class MainForm : Form
         SyncGifControls();
 
         _viewerCurrentPath = path;
-        if (_viewerTitle != null) _viewerTitle.Text = Path.GetFileName(path);
-        Text = Path.GetFileName(path) + " - Multi Image Canvas";
+        var displayName = _archiveSource == null ? Path.GetFileName(path) : path;
+        if (_viewerTitle != null) _viewerTitle.Text = displayName;
+        Text = displayName + " - Multi Image Canvas";
         UpdateViewerNavState();
         DisposeViewerImagesLater(disposeLater);
         QueueViewerPreloads();
@@ -1075,8 +1101,16 @@ internal sealed partial class MainForm : Form
         {
             if (_viewerPreloads.Remove(path, out var preloaded)) return preloaded;
         }
+        var archive = _archiveSource;
+        return Task.Run(() => DecodeViewerImage(path, archive));
+    }
+
+    private static Image DecodeViewerImage(string path, ArchiveImageSource? archive)
+    {
         // ビュアーは表示のみ。透明にじみ補正を省いて即時表示する
-        return Task.Run(() => ImageDecoder.Decode(path, fixTransparency: false));
+        return archive != null
+            ? archive.Decode(path, fixTransparency: false)
+            : ImageDecoder.Decode(path, fixTransparency: false);
     }
 
     private void QueueViewerPreloads()
@@ -1090,6 +1124,7 @@ internal sealed partial class MainForm : Form
 
         lock (_viewerPreloadLock)
         {
+            var archive = _archiveSource;
             foreach (var key in _viewerPreloads.Keys.ToList())
             {
                 if (targets.Contains(key)) continue;
@@ -1102,7 +1137,7 @@ internal sealed partial class MainForm : Form
             {
                 if (string.Equals(target, _viewerCurrentPath, StringComparison.OrdinalIgnoreCase)) continue;
                 if (_viewerPreloads.ContainsKey(target)) continue;
-                _viewerPreloads[target] = Task.Run(() => ImageDecoder.Decode(target, fixTransparency: false));
+                _viewerPreloads[target] = Task.Run(() => DecodeViewerImage(target, archive));
             }
         }
     }
@@ -1174,6 +1209,7 @@ internal sealed partial class MainForm : Form
         _sessionTitleLabel.Visible = false;
         _docTabs.Visible = false;
         _rightPanel.Visible = false;
+        _archiveBrowserPanel.Visible = false;
         _overlayFrame.Visible = false;
         _viewerBar.Visible = true;
         _viewerNavPanel.Visible = false;
@@ -1630,6 +1666,7 @@ internal sealed partial class MainForm : Form
         WindowState = FormWindowState.Normal;
         Padding = Padding.Empty;
         _viewerBar.Visible = false;
+        _archiveBrowserPanel.Visible = false;
         Bounds = Screen.FromControl(this).Bounds;
         UpdateWindowRegion(); // Region解除 (角丸なし)
         UpdateViewerNavState();
@@ -1642,6 +1679,7 @@ internal sealed partial class MainForm : Form
         _viewerFullscreen = false;
         Padding = _viewerRestorePadding;
         _viewerBar.Visible = true;
+        if (_archiveSource != null) _archiveBrowserPanel.Visible = true;
         WindowState = _viewerRestoreWindowState;
         if (_viewerRestoreWindowState == FormWindowState.Normal) Bounds = _viewerRestoreBounds;
         UpdateWindowRegion();
@@ -1678,6 +1716,10 @@ internal sealed partial class MainForm : Form
                 try
                 {
                     var doc = LayoutSerializer.FromDto(s.Tabs[i], i < s.TabFilePaths.Count ? s.TabFilePaths[i] : null);
+                    if (s.OverlayLocations is { } locations && i < locations.Count && locations[i] is { Length: 2 } location)
+                    {
+                        doc.OverlayLocation = new Point(location[0], location[1]);
+                    }
                     AddDocument(doc, select: false);
                 }
                 catch
@@ -2022,18 +2064,21 @@ internal sealed partial class MainForm : Form
         BuildItemPanel();
         BuildOverlayFrame();
         BuildViewerNavPanel();
+        BuildArchiveBrowserPanel();
 
         _canvas.Controls.Add(_rightPanel);
         _canvas.Controls.Add(_itemPanel);
         _canvas.Controls.Add(_overlaySettingsPanel);
         _canvas.Controls.Add(_overlayFrame);
         _canvas.Controls.Add(_viewerNavPanel);
+        _canvas.Controls.Add(_archiveBrowserPanel);
 
         ApplyRoundedRegion(_rightPanel, CornerRadius + 4);
         ApplyRoundedRegion(_itemPanel, CornerRadius + 4);
         ApplyRoundedRegion(_overlaySettingsPanel, CornerRadius + 4);
         ApplyRoundedRegion(_overlayFrame, CornerRadius + 4);
         ApplyRoundedRegion(_viewerNavPanel, 12);
+        ApplyRoundedRegion(_archiveBrowserPanel, CornerRadius + 4);
 
         Controls.Add(_canvas);
         Controls.Add(_docTabs);
@@ -2047,8 +2092,9 @@ internal sealed partial class MainForm : Form
         _itemPanel.BringToFront();
         _overlayFrame.BringToFront();
         _viewerNavPanel.BringToFront();
+        _archiveBrowserPanel.BringToFront();
 
-        _canvas.SizeChanged += (_, _) => { UpdateSidebarBounds(); UpdateViewerNavPanelBounds(); };
+        _canvas.SizeChanged += (_, _) => { UpdateSidebarBounds(); UpdateViewerNavPanelBounds(); UpdateArchiveBrowserBounds(); };
         UpdateSidebarBounds();
     }
 
@@ -2135,6 +2181,192 @@ internal sealed partial class MainForm : Form
         _rightPanel.Controls.Add(_sidebarContent);
         _rightPanel.Controls.Add(pathPanel);
         _rightPanel.Controls.Add(titlePanel);
+    }
+
+    private void BuildArchiveBrowserPanel()
+    {
+        _archiveBrowserPanel.Visible = false;
+        _archiveBrowserPanel.BackColor = Theme.Current.Surface;
+        _archiveBrowserPanel.Padding = new Padding(12);
+
+        var title = new Label
+        {
+            Text = Loc.T("圧縮ファイル"),
+            Dock = DockStyle.Top,
+            Height = 30,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font(Font.FontFamily, 9.5f, FontStyle.Bold),
+            ForeColor = Theme.Current.TextPrimary,
+            BackColor = Theme.Current.Surface,
+        };
+
+        _archiveSearchBox.Dock = DockStyle.Top;
+        _archiveSearchBox.Height = 30;
+        _archiveSearchBox.PlaceholderText = Loc.T("フォルダ、画像を検索");
+        _archiveSearchBox.BorderStyle = BorderStyle.FixedSingle;
+        _archiveSearchBox.TextChanged += (_, _) => RebuildArchiveTree();
+
+        var searchSpacer = new Panel { Dock = DockStyle.Top, Height = 8, BackColor = Theme.Current.Surface };
+        _archiveTree.Dock = DockStyle.Fill;
+        _archiveTree.BorderStyle = BorderStyle.None;
+        _archiveTree.HideSelection = false;
+        _archiveTree.ShowLines = true;
+        _archiveTree.ShowRootLines = false;
+        _archiveTree.BackColor = Theme.Current.Surface;
+        _archiveTree.ForeColor = Theme.Current.TextPrimary;
+        _archiveTree.AfterSelect += (_, e) => HandleArchiveTreeSelection(e.Node);
+
+        _archiveBrowserPanel.Controls.Add(_archiveTree);
+        _archiveBrowserPanel.Controls.Add(searchSpacer);
+        _archiveBrowserPanel.Controls.Add(_archiveSearchBox);
+        _archiveBrowserPanel.Controls.Add(title);
+    }
+
+    private void ShowArchiveBrowser(ArchiveImageSource source)
+    {
+        _archiveSearchBox.Clear();
+        _archiveBrowserPanel.Visible = true;
+        _archiveBrowserPanel.BringToFront();
+        if (_viewerEditBtn != null)
+        {
+            _viewerEditBtn.Enabled = false;
+            _viewerEditBtn.ToolTipText = Loc.T("圧縮ファイル内の画像はビュアーでのみ表示できます。");
+        }
+        RebuildArchiveTree();
+        UpdateArchiveBrowserBounds();
+    }
+
+    private void HideArchiveBrowser()
+    {
+        _archiveBrowserPanel.Visible = false;
+        if (_viewerEditBtn != null)
+        {
+            _viewerEditBtn.Enabled = true;
+            _viewerEditBtn.ToolTipText = Loc.T("通常の編集画面に切り替え、この画像を新しいキャンバスに配置した状態にします。");
+        }
+    }
+
+    private async Task OpenArchiveViewerAsync(string path)
+    {
+        try
+        {
+            ClearViewerPreloads();
+            var source = await Task.Run(() => new ArchiveImageSource(path));
+            if (source.Entries.Count == 0) throw new InvalidDataException(Loc.T("圧縮ファイル内に対応画像がありません。"));
+
+            _archiveSource = source;
+            _viewerFiles = source.Entries.Select(e => e.Key)
+                .OrderBy(k => k, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+            _viewerFileIndex = 0;
+            _viewerCurrentPath = null;
+            ShowArchiveBrowser(source);
+            await OpenViewerFileAsync(_viewerFiles[0], ++_viewerOpenVersion);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, Loc.T("圧縮ファイルを読み込めません"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void RebuildArchiveTree()
+    {
+        if (_archiveSource == null) return;
+        var query = _archiveSearchBox.Text.Trim();
+        var entries = _archiveSource.Entries
+            .Where(e => query.Length == 0 || e.Key.Contains(query, StringComparison.CurrentCultureIgnoreCase))
+            .OrderBy(e => e.Key, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        _archiveTree.BeginUpdate();
+        try
+        {
+            _archiveTree.Nodes.Clear();
+            var root = new TreeNode(Path.GetFileName(_archiveSource.ArchivePath)) { Tag = "A:" };
+            _archiveTree.Nodes.Add(root);
+
+            foreach (var entry in entries)
+            {
+                var parent = root;
+                var folder = string.Empty;
+                foreach (var segment in entry.Folder.Split('/', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    folder = folder.Length == 0 ? segment : $"{folder}/{segment}";
+                    var child = parent.Nodes.Cast<TreeNode>().FirstOrDefault(n => string.Equals(n.Text, segment, StringComparison.Ordinal));
+                    if (child == null)
+                    {
+                        child = new TreeNode(segment) { Tag = "D:" + folder };
+                        parent.Nodes.Add(child);
+                    }
+                    parent = child;
+                }
+                parent.Nodes.Add(new TreeNode(entry.FileName) { Tag = "I:" + entry.Key });
+            }
+
+            root.Expand();
+            if (query.Length > 0) ExpandArchiveTree(root);
+        }
+        finally
+        {
+            _archiveTree.EndUpdate();
+        }
+    }
+
+    private static void ExpandArchiveTree(TreeNode node)
+    {
+        node.Expand();
+        foreach (TreeNode child in node.Nodes)
+        {
+            if (child.Tag is string tag && tag.StartsWith("D:", StringComparison.Ordinal)) ExpandArchiveTree(child);
+        }
+    }
+
+    private void HandleArchiveTreeSelection(TreeNode? node)
+    {
+        if (_archiveSource == null || node?.Tag is not string tag) return;
+        if (tag == "A:")
+        {
+            SetArchivePageList(_archiveSource.Entries.Select(e => e.Key));
+        }
+        else if (tag.StartsWith("D:", StringComparison.Ordinal))
+        {
+            var folder = tag[2..];
+            var keys = _archiveSource.GetImageKeys(folder);
+            if (keys.Count == 0)
+            {
+                var prefix = folder + "/";
+                keys = _archiveSource.Entries.Where(e => e.Folder.StartsWith(prefix, StringComparison.Ordinal)).Select(e => e.Key).ToList();
+            }
+            SetArchivePageList(keys);
+        }
+        else if (tag.StartsWith("I:", StringComparison.Ordinal))
+        {
+            var key = tag[2..];
+            var folder = _archiveSource.Entries.FirstOrDefault(e => e.Key == key)?.Folder ?? string.Empty;
+            SetArchivePageList(_archiveSource.GetImageKeys(folder), key);
+        }
+    }
+
+    private void SetArchivePageList(IEnumerable<string> keys, string? selectedKey = null)
+    {
+        var files = keys.OrderBy(Path.GetFileName, StringComparer.CurrentCultureIgnoreCase).ToList();
+        if (files.Count == 0) return;
+        _viewerFiles = files;
+        _viewerFileIndex = selectedKey == null ? 0 : files.FindIndex(k => string.Equals(k, selectedKey, StringComparison.Ordinal));
+        if (_viewerFileIndex < 0) _viewerFileIndex = 0;
+        ClearViewerPreloads();
+        _ = OpenViewerFileAsync(_viewerFiles[_viewerFileIndex], ++_viewerOpenVersion);
+        ShowViewerChrome();
+    }
+
+    private void UpdateArchiveBrowserBounds()
+    {
+        if (!_archiveBrowserPanel.Visible) return;
+        const int margin = 12;
+        int width = Math.Min(280, Math.Max(160, _canvas.ClientSize.Width - margin * 2));
+        int height = Math.Max(80, _canvas.ClientSize.Height - margin * 2);
+        _archiveBrowserPanel.Bounds = new Rectangle(Math.Max(margin, _canvas.ClientSize.Width - margin - width), margin, width, height);
+        ApplyRoundedRegion(_archiveBrowserPanel, CornerRadius + 4);
     }
 
     private void SetSidebarView(string mode, bool loadThumbs = true)
@@ -2627,10 +2859,23 @@ internal sealed partial class MainForm : Form
         {
             _canvas.AddImage(fileName);
         }
+        else if (ArchiveImageSource.IsSupportedArchivePath(fileName))
+        {
+            OpenArchiveInViewer(fileName);
+        }
         else
         {
-            MessageBox.Show(this, Loc.T("対応しているセッション、キャンバス、画像ファイルではありません。"), Loc.T("開けません"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, Loc.T("対応しているセッション、キャンバス、画像、圧縮ファイルではありません。"), Loc.T("開けません"), MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
+    }
+
+    private void OpenArchiveInViewer(string fileName)
+    {
+        var executable = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable)) throw new InvalidOperationException(Loc.T("ビュアーを起動できません。"));
+        var startInfo = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = true };
+        startInfo.ArgumentList.Add(fileName);
+        System.Diagnostics.Process.Start(startInfo);
     }
 
     private async Task OpenImageUrlDialogAsync()
@@ -2840,7 +3085,7 @@ internal sealed partial class MainForm : Form
 
     private void SaveSessionPackage(string fileName)
     {
-        var data = CreateSessionData();
+        var data = CreateSessionData(includeOverlayLocations: false);
         var imageMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var dir = Path.GetDirectoryName(fileName);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
@@ -2967,9 +3212,10 @@ internal sealed partial class MainForm : Form
     private void OpenFile()
     {
         var imageExts = string.Join(";", ImageDecoder.SupportedExtensions.Select(e => "*" + e));
+        const string archiveExts = "*.zip;*.rar;*.7z;*.cbz;*.cbr;*.cb7";
         using var dlg = new OpenFileDialog
         {
-            Filter = $"対応ファイル (*.mics;*.micl;*.json;{imageExts})|*.mics;*.micl;*.json;{imageExts}|セッションファイル (*.mics)|*.mics|キャンバスファイル (*.micl;*.json)|*.micl;*.json|画像ファイル ({imageExts})|{imageExts}|すべてのファイル (*.*)|*.*",
+            Filter = $"対応ファイル (*.mics;*.micl;*.json;{imageExts};{archiveExts})|*.mics;*.micl;*.json;{imageExts};{archiveExts}|セッションファイル (*.mics)|*.mics|キャンバスファイル (*.micl;*.json)|*.micl;*.json|画像ファイル ({imageExts})|{imageExts}|圧縮ファイル ({archiveExts})|{archiveExts}|すべてのファイル (*.*)|*.*",
         };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
@@ -3122,34 +3368,68 @@ internal sealed partial class MainForm : Form
             }
 
             var clientRect = _canvas.RectangleToScreen(_canvas.ClientRectangle);
-            _overlayForm = new OverlayForm(_canvas, _overlayClickThrough, _overlayOpacity, OverlayAnimations.Parse(_overlayAnimation), _overlayFrameVisible)
+            var doc = ActiveDoc;
+            var location = GetOverlayLocation(doc, clientRect);
+            var overlay = new OverlayForm(_canvas, _overlayClickThrough, _overlayOpacity, OverlayAnimations.Parse(_overlayAnimation), _overlayFrameVisible)
             {
                 StartPosition = FormStartPosition.Manual,
-                Location = new Point(clientRect.Location.X + 20, clientRect.Location.Y + 20),
+                Location = location,
                 Width = clientRect.Width,
                 Height = clientRect.Height,
             };
+            _overlayForm = overlay;
+            if (doc != null) doc.OverlayLocation = location;
 
-            _overlayForm.FormClosed += (_, _) =>
+            overlay.UserMoved += (_, _) =>
             {
+                StoreOverlayLocation(ActiveDoc);
+                SaveSession();
+            };
+            overlay.FormClosed += (_, _) =>
+            {
+                if (ReferenceEquals(_overlayForm, overlay)) StoreOverlayLocation(ActiveDoc, overlay);
                 _canvas.CanvasUpdated -= Canvas_CanvasUpdated;
-                _overlayForm = null;
+                if (ReferenceEquals(_overlayForm, overlay)) _overlayForm = null;
                 UpdateOverlayButtonsState(false);
             };
 
             _canvas.CanvasUpdated += Canvas_CanvasUpdated;
-            _overlayForm.Show();
+            overlay.Show();
+            SaveSession();
         }
         else
         {
             if (_overlayForm != null)
             {
+                StoreOverlayLocation(ActiveDoc);
                 _canvas.CanvasUpdated -= Canvas_CanvasUpdated;
                 _overlayForm.Close();
                 _overlayForm = null;
+                SaveSession();
             }
         }
         UpdateOverlayButtonsState(enabled);
+    }
+
+    private Point GetOverlayLocation(CanvasDocument? doc, Rectangle clientRect)
+    {
+        if (doc?.OverlayLocation is { } saved && Screen.AllScreens.Any(screen => screen.Bounds.Contains(saved))) return saved;
+        return new Point(clientRect.X + 20, clientRect.Y + 20);
+    }
+
+    private void PositionOverlayForDocument(CanvasDocument doc)
+    {
+        if (_overlayForm == null) return;
+        var clientRect = _canvas.RectangleToScreen(_canvas.ClientRectangle);
+        var location = GetOverlayLocation(doc, clientRect);
+        _overlayForm.Location = location;
+        doc.OverlayLocation ??= location;
+    }
+
+    private void StoreOverlayLocation(CanvasDocument? doc, OverlayForm? overlay = null)
+    {
+        overlay ??= _overlayForm;
+        if (doc != null && overlay != null) doc.OverlayLocation = overlay.Location;
     }
 
     private void Canvas_CanvasUpdated(object? sender, EventArgs e) => _overlayForm?.Invalidate();
@@ -3670,7 +3950,7 @@ internal sealed partial class MainForm : Form
 
     private void ShowAbout()
     {
-        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.1";
+        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.2";
         MessageBox.Show(this,
             $"Multi Image Canvas\n{Loc.T("バージョン情報")}: {version}",
             Loc.T("バージョン情報"),
@@ -3689,6 +3969,7 @@ internal sealed partial class MainForm : Form
         _docTabs.Visible = false;
         _rightPanel.Visible = false;
         _itemPanel.Visible = false;
+        _archiveBrowserPanel.Visible = false;
         _overlaySettingsPanel.Visible = false;
         _overlayFrame.Visible = false;
         _uiHidden = true;
@@ -3700,8 +3981,9 @@ internal sealed partial class MainForm : Form
         if (!_uiHidden) return;
         if (_viewerMode)
         {
-            // ビュアーモードは上部バーだけ戻す
+            // ビュアーモードは上部バーと圧縮ファイルブラウザーだけ戻す
             _viewerBar.Visible = true;
+            if (_archiveSource != null) _archiveBrowserPanel.Visible = true;
             _uiHidden = false;
             return;
         }
@@ -3746,6 +4028,9 @@ internal sealed partial class MainForm : Form
         ApplyThemeRecursive(_itemPanel, t);
         ApplyThemeRecursive(_overlaySettingsPanel, t);
         ApplyThemeRecursive(_overlayFrame, t);
+        ApplyThemeRecursive(_archiveBrowserPanel, t);
+        _archiveTree.BackColor = t.Surface;
+        _archiveTree.ForeColor = t.TextPrimary;
         ApplyTreeTheme2(t);
 
         SetSidebarView(_sidebarView); // ボタンの選択色を更新
@@ -3765,6 +4050,7 @@ internal sealed partial class MainForm : Form
         ApplyLanguageRecursive(_itemPanel);
         ApplyLanguageRecursive(_overlaySettingsPanel);
         ApplyLanguageRecursive(_overlayFrame);
+        ApplyLanguageRecursive(_archiveBrowserPanel);
         UpdateMenuShortcutTexts();
         _canvas.Invalidate();
     }

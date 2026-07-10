@@ -29,10 +29,8 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox _imageScaleCombo = new();
     private readonly ComboBox _languageCombo = new();
     private readonly ComboBox _animCombo = new();
-    private readonly CheckedListBox _assocList = new();
     private Label? _overlayHotkeyHint;
     private Button? _applyBtn;
-    private bool _useAssociationInitialDefaults = true;
 
     private readonly ListBox _nav = new();
     private readonly Panel _pageHost = new();
@@ -146,7 +144,6 @@ internal sealed class SettingsForm : Form
         Controls.Add(root);
 
         RefreshKeyList();
-        RefreshAssociationList();
         WireDirtyTracking();
         _nav.SelectedIndex = 0;
     }
@@ -400,77 +397,37 @@ internal sealed class SettingsForm : Form
 
         var desc = new Label
         {
-            Text = Loc.T("このアプリで開けるようにする拡張子を選んで「登録」を押してください。\n登録後、「Windowsの既定のアプリ設定」で Multi Image Canvas を既定に選べます。\n(登録は現在のユーザーのみ・管理者権限不要)"),
+            Text = Loc.T("Windows 11 では、既定のアプリは設定画面でユーザーが選択する必要があります。\n下のボタンを押すと、Multi Image Canvas の登録を整えたうえで、このアプリの既定のアプリ設定画面を開きます。\n(登録は現在のユーザーのみ・管理者権限不要)"),
             Dock = DockStyle.Top,
-            Height = 58,
+            Height = 74,
             ForeColor = t.TextSecondary,
             BackColor = t.Background,
         };
 
-        _assocList.BorderStyle = BorderStyle.FixedSingle;
-        _assocList.BackColor = t.SurfaceLight;
-        _assocList.ForeColor = t.TextPrimary;
-        _assocList.CheckOnClick = true;
-        _assocList.Dock = DockStyle.Fill;
-        _assocList.IntegralHeight = false;
-        _assocList.MultiColumn = true;
-        _assocList.ColumnWidth = 110;
-
         var buttons = new FlowLayoutPanel
         {
-            Dock = DockStyle.Bottom,
-            Height = 76,
+            Dock = DockStyle.Top,
+            Height = 52,
             FlowDirection = FlowDirection.LeftToRight,
             Padding = new Padding(0, 6, 0, 0),
         };
-        buttons.Controls.Add(MakeButton(Loc.T("選択した拡張子を登録"), (_, _) => ApplyAssociations()));
-        buttons.Controls.Add(MakeButton(Loc.T("すべて解除"), (_, _) => UnregisterAssociations()));
-        buttons.Controls.Add(MakeButton(Loc.T("Windowsの既定のアプリ設定を開く"), (_, _) => FileAssociation.OpenWindowsDefaultAppsSettings()));
+        buttons.Controls.Add(MakeButton(Loc.T("Multi Image Canvasを既定のアプリに設定"), (_, _) => OpenDefaultAppSettings()));
 
-        page.Controls.Add(_assocList);
         page.Controls.Add(buttons);
         page.Controls.Add(desc);
         page.Controls.SetChildIndex(desc, page.Controls.Count - 1);
         return page;
     }
 
-    private void RefreshAssociationList()
-    {
-        var registered = FileAssociation.GetRegisteredExtensions();
-        _assocList.BeginUpdate();
-        _assocList.Items.Clear();
-        foreach (var ext in FileAssociation.AssociableExtensions)
-        {
-            _assocList.Items.Add(ext, registered.Contains(ext) || (_useAssociationInitialDefaults && FileAssociation.IsAppSpecificExtension(ext)));
-        }
-        _assocList.EndUpdate();
-    }
-
-    private void ApplyAssociations()
+    private void OpenDefaultAppSettings()
     {
         try
         {
-            var selected = _assocList.CheckedItems.Cast<string>().ToList();
-            FileAssociation.Apply(selected);
-            MessageBox.Show(this,
-                string.Format(Loc.T("{0} 件の拡張子を登録しました。\n既定のアプリにするには「Windowsの既定のアプリ設定を開く」から Multi Image Canvas を選択してください。"), selected.Count),
-                Loc.T("ファイル関連付け"), MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, Loc.T("ファイル関連付け"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
-
-    private void UnregisterAssociations()
-    {
-        try
-        {
-            FileAssociation.UnregisterAll();
-            _useAssociationInitialDefaults = false;
-            RefreshAssociationList();
-            MessageBox.Show(this, Loc.T("ファイル関連付けをすべて解除しました。"),
-                Loc.T("ファイル関連付け"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!FileAssociation.OpenWindowsDefaultAppsSettings())
+            {
+                MessageBox.Show(this, Loc.T("Windowsの既定のアプリ設定を開けませんでした。"),
+                    Loc.T("ファイル関連付け"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
         catch (Exception ex)
         {

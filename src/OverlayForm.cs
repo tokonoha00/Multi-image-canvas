@@ -50,11 +50,16 @@ internal sealed class OverlayForm : Form
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
 
     private const int GWL_EXSTYLE = -20;
     private const int WS_EX_TRANSPARENT = 0x20;
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int WS_EX_TOOLWINDOW = 0x80;
+    private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+
+    public event EventHandler? UserMoved;
 
     private bool _isDraggingWindow;
     private Point _dragMouseStart;
@@ -310,9 +315,17 @@ internal sealed class OverlayForm : Form
 
     private void OverlayForm_MouseUp(object? sender, MouseEventArgs e)
     {
+        bool moved = _isDraggingWindow;
         _isDraggingWindow = false;
         Capture = false;
         ApplyClickThrough();
+        if (moved) UserMoved?.Invoke(this, EventArgs.Empty);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        SetWindowDisplayAffinity(Handle, WDA_EXCLUDEFROMCAPTURE);
     }
 
     private void OverlayForm_DoubleClick(object? sender, EventArgs e)

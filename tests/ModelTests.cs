@@ -358,6 +358,35 @@ public class LayoutSerializerTests : IDisposable
     {
         Assert.ThrowsAny<Exception>(() => LayoutSerializer.Deserialize("{not json"));
     }
+
+    [Fact]
+    public void SessionSerialization_RoundTripsOverlayLocations()
+    {
+        var session = new SessionData
+        {
+            OverlayLocations = [new[] { 120, 240 }, null, new[] { -50, 30 }],
+        };
+
+        var loaded = SessionStore.Deserialize(SessionStore.Serialize(session));
+
+        Assert.NotNull(loaded?.OverlayLocations);
+        Assert.Equal(new[] { 120, 240 }, loaded.OverlayLocations[0]);
+        Assert.Null(loaded.OverlayLocations[1]);
+        Assert.Equal(new[] { -50, 30 }, loaded.OverlayLocations[2]);
+    }
+
+    [Fact]
+    public void LayoutSerialization_DoesNotIncludeOverlayLocation()
+    {
+        using var doc = new CanvasDocument("private placement")
+        {
+            OverlayLocation = new Point(120, 240),
+        };
+
+        var json = LayoutSerializer.Serialize(doc);
+
+        Assert.DoesNotContain("OverlayLocation", json, StringComparison.Ordinal);
+    }
 }
 
 public class ImageDecoderTests : IDisposable

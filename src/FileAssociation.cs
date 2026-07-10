@@ -11,6 +11,7 @@ internal static class FileAssociation
 {
     public const string AppName = "Multi Image Canvas";
     private const string CapabilitiesPath = @"Software\MultiImageCanvas\Capabilities";
+    private const string RegisteredApplicationsPath = @"Software\RegisteredApplications";
 
     private const string ImageProgId = "MultiImageCanvas.Image";
     private const string CanvasProgId = "MultiImageCanvas.Canvas";
@@ -44,33 +45,10 @@ internal static class FileAssociation
 
     private static string? ExePath => Environment.ProcessPath;
 
-    // 現在このアプリに登録済みの拡張子
-    public static HashSet<string> GetRegisteredExtensions()
-    {
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            using var fa = Registry.CurrentUser.OpenSubKey(CapabilitiesPath + @"\FileAssociations");
-            if (fa != null)
-            {
-                foreach (var name in fa.GetValueNames())
-                {
-                    if (!string.IsNullOrEmpty(name)) result.Add(name);
-                }
-            }
-        }
-        catch
-        {
-            // レジストリ読み取り失敗は「未登録」扱い
-        }
-        return result;
-    }
-
-    // 選択された拡張子だけを登録し、外された拡張子は登録解除する
-    public static void Apply(IReadOnlyCollection<string> selectedExtensions)
+    // Windowsの既定アプリ設定に表示できる状態まで登録を整える
+    public static void EnsureRegistered()
     {
         var exe = ExePath ?? throw new InvalidOperationException("実行ファイルのパスを取得できません。");
-        var selected = new HashSet<string>(selectedExtensions, StringComparer.OrdinalIgnoreCase);
 
         // 1. ProgID (開くコマンド + アイコン)
         // 画像ProgIDだけはサムネイルハンドラを併せて登録し、既定アプリにしても
@@ -87,16 +65,19 @@ internal static class FileAssociation
             using var fa = caps.CreateSubKey("FileAssociations");
             foreach (var name in fa.GetValueNames())
             {
-                if (!selected.Contains(name)) fa.DeleteValue(name, throwOnMissingValue: false);
+                if (!AssociableExtensions.Contains(name, StringComparer.OrdinalIgnoreCase))
+                {
+                    fa.DeleteValue(name, throwOnMissingValue: false);
+                }
             }
-            foreach (var ext in selected)
+            foreach (var ext in AssociableExtensions)
             {
                 fa.SetValue(ext, ProgIdFor(ext));
             }
         }
 
         // 3. アプリ登録 (Windowsの「既定のアプリ」にアプリ名を表示させる)
-        using (var ra = Registry.CurrentUser.CreateSubKey(@"Software\RegisteredApplications"))
+        using (var ra = Registry.CurrentUser.CreateSubKey(RegisteredApplicationsPath))
         {
             ra.SetValue(AppName, CapabilitiesPath);
         }
@@ -105,15 +86,7 @@ internal static class FileAssociation
         foreach (var ext in AssociableExtensions)
         {
             using var extKey = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{ext}\OpenWithProgids");
-            var progId = ProgIdFor(ext);
-            if (selected.Contains(ext))
-            {
-                extKey.SetValue(progId, Array.Empty<byte>(), RegistryValueKind.None);
-            }
-            else
-            {
-                extKey.DeleteValue(progId, throwOnMissingValue: false);
-            }
+            extKey.SetValue(ProgIdFor(ext), Array.Empty<byte>(), RegistryValueKind.None);
         }
 
         NotifyShell();
@@ -134,7 +107,7 @@ internal static class FileAssociation
         try { Registry.CurrentUser.DeleteSubKeyTree(@"Software\MultiImageCanvas", throwOnMissingSubKey: false); } catch { }
         try
         {
-            using var ra = Registry.CurrentUser.OpenSubKey(@"Software\RegisteredApplications", writable: true);
+            using var ra = Registry.CurrentUser.OpenSubKey(RegisteredApplicationsPath, writable: true);
             ra?.DeleteValue(AppName, throwOnMissingValue: false);
         }
         catch { }
@@ -174,16 +147,58 @@ internal static class FileAssociation
 
     private static void NotifyShell() => SHChangeNotify(SHCNE_ASSOCCHANGED, 0, IntPtr.Zero, IntPtr.Zero);
 
-    // Windowsの「既定のアプリ」設定を開く (既定にする最終操作はユーザーが行う)
-    public static void OpenWindowsDefaultAppsSettings()
+    // Windowsの「既定のアプリ」設定を開き、本アプリの画面へ誘導する
+    public static bool OpenWindowsDefaultAppsSettings()
+    {
+        EnsureRegistered();
+
+        var deepLink = GetDefaultAppsSettingsUri();
+        if (!string.IsNullOrEmpty(deepLink) && TryOpenUri(deepLink))
+        {
+            return true;
+        }
+
+        return TryOpenUri("ms-settings:defaultapps");
+    }
+
+    private static string? GetDefaultAppsSettingsUri()
+    {
+        if (HasRegisteredApplication(Registry.CurrentUser, RegisteredApplicationsPath, AppName))
+        {
+            return "ms-settings:defaultapps?registeredAppUser=" + Uri.EscapeDataString(AppName);
+        }
+
+        if (HasRegisteredApplication(Registry.LocalMachine, RegisteredApplicationsPath, AppName))
+        {
+            return "ms-settings:defaultapps?registeredAppMachine=" + Uri.EscapeDataString(AppName);
+        }
+
+        return null;
+    }
+
+    private static bool HasRegisteredApplication(RegistryKey root, string subKeyPath, string appName)
     {
         try
         {
-            Process.Start(new ProcessStartInfo("ms-settings:defaultapps") { UseShellExecute = true });
+            using var key = root.OpenSubKey(subKeyPath);
+            return key?.GetValue(appName) is string;
         }
         catch
         {
-            // 設定アプリが開けない環境では無視
+            return false;
+        }
+    }
+
+    private static bool TryOpenUri(string uri)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 }

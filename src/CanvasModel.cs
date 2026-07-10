@@ -124,6 +124,7 @@ internal sealed class CanvasDocument : IDisposable
     public List<PaintStroke> Strokes { get; } = [];
     public float Zoom { get; set; } = 1f;
     public PointF Scroll { get; set; }
+    public Point? OverlayLocation { get; set; }
 
     public UndoStack Undo { get; } = new();
 

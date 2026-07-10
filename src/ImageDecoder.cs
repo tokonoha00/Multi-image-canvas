@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace MultiImageCanvas;
 
@@ -36,32 +37,72 @@ internal static class ImageDecoder
 
         if (GdiExtensions.Contains(ext))
         {
-            try { return DecodeGdi(path, fixTransparency); }
+            try
+            {
+                using var fs = File.OpenRead(path);
+                return DecodeGdi(fs, path, fixTransparency, maxPixels: null);
+            }
             catch { /* GDI+失敗時はWICにフォールバック */ }
         }
 
-        try { return DecodeWic(path, fixTransparency); }
+        try
+        {
+            using var fs = File.OpenRead(path);
+            return DecodeWic(fs, path, fixTransparency, maxPixels: null);
+        }
         catch when (GdiExtensions.Contains(ext) == false)
         {
             // WICも失敗した未知の形式は最後にGDI+を試す
-            return DecodeGdi(path, fixTransparency);
+            using var fs = File.OpenRead(path);
+            return DecodeGdi(fs, path, fixTransparency, maxPixels: null);
         }
     }
 
-    private static Image DecodeGdi(string path, bool fixTransparency)
+    public static Image Decode(Stream stream, string sourceName, bool fixTransparency = true, long? maxPixels = null)
     {
-        var bytes = File.ReadAllBytes(path);
-        var ms = new MemoryStream(bytes);
-        var img = Image.FromStream(ms);
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceName);
+
+        if (!stream.CanRead) throw new ArgumentException("The source stream must be readable.", nameof(stream));
+
+        var ext = Path.GetExtension(sourceName).ToLowerInvariant();
+        using var buffered = CopyToMemory(stream);
+
+        if (GdiExtensions.Contains(ext))
+        {
+            try
+            {
+                buffered.Position = 0;
+                return DecodeGdi(buffered, sourceName, fixTransparency, maxPixels);
+            }
+            catch { /* GDI+失敗時はWICにフォールバック */ }
+        }
+
+        buffered.Position = 0;
+        try { return DecodeWic(buffered, sourceName, fixTransparency, maxPixels); }
+        catch when (GdiExtensions.Contains(ext) == false)
+        {
+            buffered.Position = 0;
+            return DecodeGdi(buffered, sourceName, fixTransparency, maxPixels);
+        }
+    }
+
+    private static Image DecodeGdi(Stream stream, string sourceName, bool fixTransparency, long? maxPixels)
+    {
+        var ms = CopyToMemory(stream);
+        ms.Position = 0;
+        var img = Image.FromStream(ms, useEmbeddedColorManagement: false, validateImageData: true);
 
         if (ImageAnimator.CanAnimate(img))
         {
             // アニメーション画像はフレーム保持のため元ストリームごと保持する
+            ValidatePixelCount(img, maxPixels, sourceName);
             _liveStreams.Add(img, ms);
             return img;
         }
 
         // 静止画はビットマップに複製してストリームを解放
+        ValidatePixelCount(img, maxPixels, sourceName);
         var sourceHasAlpha = Image.IsAlphaPixelFormat(img.PixelFormat);
         var cloned = new Bitmap(img);
         img.Dispose();
@@ -71,14 +112,17 @@ internal static class ImageDecoder
         return cloned;
     }
 
-    private static Image DecodeWic(string path, bool fixTransparency)
+    private static Image DecodeWic(Stream stream, string sourceName, bool fixTransparency, long? maxPixels)
     {
+        var ms = CopyToMemory(stream);
+        ms.Position = 0;
         var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(
-            new Uri(Path.GetFullPath(path)),
+            ms,
             System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
             System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
 
         var frame = decoder.Frames[0];
+        ValidatePixelCount(frame.PixelWidth, frame.PixelHeight, maxPixels, sourceName);
         var converted = new System.Windows.Media.Imaging.FormatConvertedBitmap(
             frame, System.Windows.Media.PixelFormats.Bgra32, null, 0);
 
@@ -91,6 +135,7 @@ internal static class ImageDecoder
         finally
         {
             bmp.UnlockBits(data);
+            ms.Dispose();
         }
         if (fixTransparency) FixTransparentRgb(bmp);
         return bmp;
@@ -108,7 +153,7 @@ internal static class ImageDecoder
         {
             int stride = Math.Abs(data.Stride);
             byte[] pixels = new byte[stride * bmp.Height];
-            System.Runtime.InteropServices.Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
+            Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
 
             bool wroteAnything = false;
             bool changed;
@@ -151,7 +196,7 @@ internal static class ImageDecoder
             // 補正対象が無ければ書き戻し(全画素コピー)を省く (不透明画像の無駄を排除)
             if (wroteAnything)
             {
-                System.Runtime.InteropServices.Marshal.Copy(pixels, 0, data.Scan0, pixels.Length);
+                Marshal.Copy(pixels, 0, data.Scan0, pixels.Length);
             }
         }
         finally
@@ -192,5 +237,32 @@ internal static class ImageDecoder
         float h = src.Height * scale;
         g.DrawImage(src, (size - w) / 2f, (size - h) / 2f, w, h);
         return thumb;
+    }
+
+    private static MemoryStream CopyToMemory(Stream stream)
+    {
+        if (stream is MemoryStream memory && memory.Position == 0)
+        {
+            return new MemoryStream(memory.ToArray(), writable: false);
+        }
+
+        var copy = new MemoryStream();
+        stream.CopyTo(copy);
+        copy.Position = 0;
+        return copy;
+    }
+
+    private static void ValidatePixelCount(Image image, long? maxPixels, string sourceName) =>
+        ValidatePixelCount(image.Width, image.Height, maxPixels, sourceName);
+
+    private static void ValidatePixelCount(int width, int height, long? maxPixels, string sourceName)
+    {
+        if (maxPixels is null) return;
+
+        long pixels = (long)width * height;
+        if (pixels > maxPixels.Value)
+        {
+            throw new InvalidDataException($"Image pixel limit exceeded: {sourceName}");
+        }
     }
 }

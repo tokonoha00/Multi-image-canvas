@@ -1,7 +1,7 @@
 # Build the portable distribution package (self-contained; no .NET install required).
 # Output: <repo>\dist\MultiImageCanvas-<version>-portable-win-x64.zip
 param(
-    [string]$Version = "1.0.1",
+    [string]$Version = "1.0.2",
     [string]$ShareDir = ""
 )
 $ErrorActionPreference = "Stop"

@@ -101,6 +101,7 @@ public class ShareExportTests : IDisposable
         // 環境情報 (ウィンドウ位置) を含めない
         var (session, _) = ReadPackage(file);
         Assert.Null(session.WindowBounds);
+        Assert.Null(session.OverlayLocations);
     }
 
     [Fact]

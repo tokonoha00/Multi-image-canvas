@@ -20,6 +20,13 @@ The installer and portable ZIP are published as self-contained Windows x64 build
 
 The generated installer is produced with Inno Setup. The app itself does not require Inno Setup to run.
 
+## SharpCompress
+
+- Used to read ZIP, RAR, and 7z archives without extracting them to disk
+- Copyright: SharpCompress contributors
+- License: MIT
+- https://github.com/adamhathcock/sharpcompress
+
 ## Test-only dependencies
 
 The test project references xUnit and Microsoft.NET.Test.Sdk. These are used only for development and are not required to run the distributed app.

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace MultiImageCanvas;
 
@@ -19,6 +20,8 @@ internal sealed class SessionData
     public float BgOpacity { get; set; } = 1.0f;
     public int ActiveTab { get; set; }
     public List<LayoutDto> Tabs { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<int[]?>? OverlayLocations { get; set; }
     // タブごとの保存先パス (未保存タブは null)
     public List<string?> TabFilePaths { get; set; } = [];
     // キャンバスのグリッド線表示 (現在は常時ON・後方互換のため残置)
