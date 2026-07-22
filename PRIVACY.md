@@ -1,10 +1,11 @@
 # Privacy Policy
 
-Multi Image Canvas is designed with a strong focus on privacy and offline execution.
+Multi Image Canvas is designed with a strong focus on privacy and local processing.
 
 ## Data Collection and Network Usage
-- **No Network Transmission**: This application runs entirely offline. It does not collect, transmit, or share any user data, images, or layout files to external servers.
-- **Local Access Only**: The application only accesses local files. It performs HTTP(S) requests ONLY when a user explicitly requests to load an image from a remote URL.
+- **No Telemetry or Automatic Uploads**: The application does not collect analytics or automatically upload user data, images, sessions, or layout files.
+- **Remote Image Loading**: The application performs HTTP(S) requests only when the user explicitly opens an image URL or drags remote image content from a browser. The request is sent to the URL host and may expose standard connection information such as the user's IP address to that host.
+- **Local Processing**: Sessions, layouts, exports, and locally opened images are processed on the user's PC.
 
 ## Layout Sharing (.mics) and Privacy Features
 When exporting layouts for sharing via "Export for Sharing..." (共有用にエクスポート...), the application automatically strips potentially sensitive data:
@@ -23,11 +24,12 @@ To protect your environment when importing `.mics` shared layouts, the applicati
 
 ### プライバシーポリシー（日本語）
 
-Multi Image Canvas は、プライバシーの保護とオフライン動作を第一に考えて設計されています。
+Multi Image Canvas は、プライバシーの保護とローカル処理を第一に考えて設計されています。
 
 ## データ収集とネットワーク利用について
-- **ネットワーク送信なし**: 本アプリは完全にオフラインで動作します。ユーザーデータ、配置された画像、レイアウト情報等を外部サーバーへ送信・共有することは一切ありません。
-- **ローカル完結**: ユーザーが外部のURLから画像を読み込むように明示的に指定した場合を除き、ネットワーク通信を行うことはありません。
+- **テレメトリ・自動アップロードなし**: 利用状況の収集や、ユーザーデータ、画像、セッション、レイアウトファイルの自動アップロードは行いません。
+- **外部画像の読み込み**: ユーザーが画像URLを開くか、ブラウザから外部画像をD&Dした場合のみ、そのURLのホストへHTTP(S)リクエストを送信します。この通信では、通常のWebアクセスと同様に接続元IPアドレス等が画像配信元へ伝わる場合があります。
+- **ローカル処理**: セッション、レイアウト、エクスポート、ローカル画像はユーザーのPC内で処理します。
 
 ## 共有用エクスポート（.mics）におけるプライバシー機能
 「共有用にエクスポート...」機能を用いてレイアウトをエクスポートする際、以下の個人情報・機密情報が自動的に除去されます：

@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Text.Json;
+using System.Windows.Forms;
 using MultiImageCanvas;
 using Xunit;
 
@@ -10,6 +11,12 @@ namespace MultiImageCanvas.Tests;
 public class AppSettingsTests
 {
     [Fact]
+    public void OverlayAnimation_DefaultsToFade()
+    {
+        Assert.Equal("フェード", new AppSettingsData().OverlayAnimation);
+    }
+
+    [Fact]
     public void ViewerWindowPlacement_RoundTrips()
     {
         var settings = new AppSettingsData { ViewerWindowBounds = [120, 80, 900, 600], ViewerMaximized = true };
@@ -17,6 +24,20 @@ public class AppSettingsTests
 
         Assert.Equal(settings.ViewerWindowBounds, loaded.ViewerWindowBounds);
         Assert.True(loaded.ViewerMaximized);
+    }
+}
+
+public class DragDropTests
+{
+    [Fact]
+    public void ExtractUrlsFromData_DecodesHtmlEntities()
+    {
+        var data = new DataObject();
+        data.SetData(DataFormats.Html, "<img src=\"https://pbs.twimg.com/media/test?format=jpg&amp;name=small\">");
+
+        var urls = MainForm.ExtractUrlsFromData(data).ToArray();
+
+        Assert.Contains("https://pbs.twimg.com/media/test?format=jpg&name=small", urls);
     }
 }
 

@@ -44,7 +44,7 @@ internal sealed class AppSettingsData
     public bool GridSnap { get; set; }
     public int ImageImportScalePercent { get; set; } = 100;
     public string Language { get; set; } = "日本語";
-    public string OverlayAnimation { get; set; } = "ブロック";
+    public string OverlayAnimation { get; set; } = "フェード";
     public int[]? ViewerWindowBounds { get; set; }
     public bool ViewerMaximized { get; set; }
 }

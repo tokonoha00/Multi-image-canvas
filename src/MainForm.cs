@@ -22,6 +22,12 @@ internal sealed partial class MainForm : Form
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll")]
     private static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    private const int DWMWCP_DONOTROUND = 1;
+    private const int DWMWCP_ROUND = 2;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct TRACKMOUSEEVENT
@@ -106,6 +112,11 @@ internal sealed partial class MainForm : Form
     // 右サイドバー
     private readonly Panel _rightPanel = new();
     private readonly Panel _sidebarContent = new();
+    private Panel? _sidebarHeader;
+    private Control? _sidebarPathPanel;
+    private FlowLayoutPanel? _sidebarSwitchRow;
+    private Button? _sidebarCollapseBtn;
+    private readonly ToolTip _sidebarToolTip = new();
     private ThumbnailView? _thumbs;
     private LayerPanel? _layers;
     private Panel? _treeArea;
@@ -116,6 +127,7 @@ internal sealed partial class MainForm : Form
 
     // 選択画像の操作メニュー (画像横にフローティング表示)
     private readonly Panel _itemPanel = new();
+    private bool _itemPanelRequested;
 
     // オーバーレイ設定パネル (歯車で開く。ファイル選択画面に重ねて表示)
     private readonly Panel _overlaySettingsPanel = new();
@@ -131,13 +143,14 @@ internal sealed partial class MainForm : Form
     private bool _overlayFrameVisible = true;
 
     private bool _uiHidden;
+    private bool _sidebarCollapsed;
     private int _sidebarWidth = 296;
     private string? _lastFolderPath;
 
     private bool _restoreTabsSetting = true;
     private int _autosaveSeconds = 30;
     private string _language = Loc.Japanese;
-    private string _overlayAnimation = "ブロック";
+    private string _overlayAnimation = "フェード";
 
     // タブのドラッグ&ドロップ並べ替え
     private int _tabDragSource = -1;
@@ -383,7 +396,7 @@ internal sealed partial class MainForm : Form
         _canvas.GridSnapEnabled = _appSettings.GridSnap;
         _canvas.ImageImportScale = Math.Clamp(_appSettings.ImageImportScalePercent, 25, 200) / 100f;
         _language = Loc.Normalize(_appSettings.Language);
-        _overlayAnimation = _appSettings.OverlayAnimation;
+        _overlayAnimation = OverlayAnimations.Names.Contains(_appSettings.OverlayAnimation) ? _appSettings.OverlayAnimation : "フェード";
     }
 
     private void SaveSettings()
@@ -411,6 +424,7 @@ internal sealed partial class MainForm : Form
 
     private void ClearDocuments()
     {
+        _itemPanelRequested = false;
         _canvas.Document = null;
         _layers?.AttachDocument(null);
         foreach (var doc in _docs) doc.Dispose();
@@ -434,6 +448,7 @@ internal sealed partial class MainForm : Form
     private void SelectDocument(int index)
     {
         if (index < 0 || index >= _docs.Count) return;
+        _itemPanelRequested = false;
         if (_overlayForm != null) StoreOverlayLocation(ActiveDoc);
         _activeDocIndex = index;
         var doc = _docs[index];
@@ -2112,22 +2127,11 @@ internal sealed partial class MainForm : Form
         _rightPanel.BackColor = Theme.Current.Surface;
         _rightPanel.AutoScroll = true;
 
-        // タイトル行 + 表示切替ボタン
-        var titlePanel = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = Theme.Current.Surface };
-        var titleLabel = new Label
+        // 表示切替は左、最小化は右にまとめる。
+        _sidebarHeader = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = Theme.Current.Surface };
+        _sidebarSwitchRow = new FlowLayoutPanel
         {
-            Text = "📂 " + Loc.T("ファイル"),
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font(Font.FontFamily, 9.5f, FontStyle.Bold),
-            ForeColor = Theme.Current.TextPrimary,
-            BackColor = Theme.Current.Surface,
-            Padding = new Padding(2, 4, 2, 4),
-        };
-
-        var switchRow = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Right,
+            Dock = DockStyle.Left,
             Width = 118,
             FlowDirection = FlowDirection.LeftToRight,
             BackColor = Theme.Current.Surface,
@@ -2146,21 +2150,34 @@ internal sealed partial class MainForm : Form
                 CornerRadius = 8,
             };
             b.Click += (_, _) => SetSidebarView(mode);
-            new ToolTip().SetToolTip(b, tip);
+            _sidebarToolTip.SetToolTip(b, tip);
             return b;
         }
 
-        _viewTreeBtn = MakeViewBtn("🌳", Loc.T("フォルダツリー"), "tree");
+        _viewTreeBtn = MakeViewBtn("▤", Loc.T("フォルダツリー"), "tree");
         _viewThumbsBtn = MakeViewBtn("🖼", Loc.T("サムネイル一覧"), "thumbs");
         _viewLayersBtn = MakeViewBtn("📚", Loc.T("レイヤー"), "layers");
-        switchRow.Controls.Add(_viewTreeBtn);
-        switchRow.Controls.Add(_viewThumbsBtn);
-        switchRow.Controls.Add(_viewLayersBtn);
+        _sidebarSwitchRow.Controls.Add(_viewTreeBtn);
+        _sidebarSwitchRow.Controls.Add(_viewThumbsBtn);
+        _sidebarSwitchRow.Controls.Add(_viewLayersBtn);
 
-        titlePanel.Controls.Add(titleLabel);
-        titlePanel.Controls.Add(switchRow);
+        _sidebarCollapseBtn = new RoundedFlatButton
+        {
+            Text = "−",
+            Dock = DockStyle.Right,
+            Width = 34,
+            Height = 28,
+            ForeColor = Theme.Current.TextPrimary,
+            CornerRadius = 8,
+            Cursor = Cursors.Hand,
+        };
+        _sidebarToolTip.SetToolTip(_sidebarCollapseBtn, Loc.T("ファイル選択メニューを最小化"));
+        _sidebarCollapseBtn.Click += (_, _) => SetSidebarCollapsed(!_sidebarCollapsed);
 
-        var pathPanel = BuildPathPanel();
+        _sidebarHeader.Controls.Add(_sidebarSwitchRow);
+        _sidebarHeader.Controls.Add(_sidebarCollapseBtn);
+
+        _sidebarPathPanel = BuildPathPanel();
 
         // コンテンツ領域 (ツリー / サムネイル / レイヤー)
         _sidebarContent.Dock = DockStyle.Fill;
@@ -2179,8 +2196,46 @@ internal sealed partial class MainForm : Form
         ApplyRoundedRegion(_sidebarContent, CornerRadius);
 
         _rightPanel.Controls.Add(_sidebarContent);
-        _rightPanel.Controls.Add(pathPanel);
-        _rightPanel.Controls.Add(titlePanel);
+        _rightPanel.Controls.Add(_sidebarPathPanel);
+        _rightPanel.Controls.Add(_sidebarHeader);
+    }
+
+    private void SetSidebarCollapsed(bool collapsed)
+    {
+        _rightPanel.SuspendLayout();
+        _sidebarHeader?.SuspendLayout();
+
+        _sidebarCollapsed = collapsed;
+        _sidebarContent.Visible = false;
+        if (_sidebarPathPanel != null) _sidebarPathPanel.Visible = false;
+        if (_sidebarSwitchRow != null) _sidebarSwitchRow.Visible = false;
+        _rightPanel.AutoScroll = false;
+        _rightPanel.Padding = new Padding(12);
+
+        if (_sidebarHeader != null) _sidebarHeader.Dock = collapsed ? DockStyle.Fill : DockStyle.Top;
+        if (_sidebarCollapseBtn != null)
+        {
+            _sidebarCollapseBtn.Text = collapsed ? "▣" : "−";
+            _sidebarCollapseBtn.Dock = collapsed ? DockStyle.Fill : DockStyle.Right;
+            _sidebarCollapseBtn.Width = 34;
+            _sidebarToolTip.SetToolTip(_sidebarCollapseBtn,
+                Loc.T(collapsed ? "ファイル選択メニューを復元" : "ファイル選択メニューを最小化"));
+        }
+
+        UpdateSidebarBounds();
+
+        if (!collapsed)
+        {
+            _sidebarContent.Visible = true;
+            if (_sidebarPathPanel != null) _sidebarPathPanel.Visible = true;
+            if (_sidebarSwitchRow != null) _sidebarSwitchRow.Visible = true;
+            _rightPanel.AutoScroll = true;
+        }
+
+        _sidebarHeader?.ResumeLayout(true);
+        _rightPanel.ResumeLayout(true);
+        _rightPanel.BackColor = Theme.Current.Surface;
+        _rightPanel.Invalidate(true);
     }
 
     private void BuildArchiveBrowserPanel()
@@ -2467,7 +2522,7 @@ internal sealed partial class MainForm : Form
     {
         // ドラッグ・パン中は非表示にして残像 (毎フレームの移動再描画による尾引き) を防ぐ。
         // 操作が終わると CanvasUpdated 経由で再表示される
-        bool visible = !_viewerMode && !_canvas.ReadOnlyView && _canvas.Selected != null && !_uiHidden && !_canvas.IsInteracting;
+        bool visible = _itemPanelRequested && !_viewerMode && !_canvas.ReadOnlyView && _canvas.Selected != null && !_uiHidden && !_canvas.IsInteracting;
 
         if (visible) UpdateItemPanelPosition();
         if (_itemPanel.Visible != visible)
@@ -2523,7 +2578,7 @@ internal sealed partial class MainForm : Form
         _sidebarOverlayBtn.Font = new Font(Font.FontFamily, 10f, FontStyle.Bold);
         _sidebarOverlayBtn.ForeColor = Color.White;
         _sidebarOverlayBtn.Cursor = Cursors.Hand;
-        _sidebarOverlayBtn.CornerRadius = 20;
+        _sidebarOverlayBtn.CornerRadius = 12;
 
         UpdateSidebarOverlayButtonState(false);
 
@@ -2555,7 +2610,7 @@ internal sealed partial class MainForm : Form
 
     // ===== オーバーレイ設定パネル (歯車で開閉。ファイル選択画面の上に重ねる) =====
 
-    private const int OverlaySettingsHeight = 192;
+    private const int OverlaySettingsHeight = 232;
 
     private void BuildOverlaySettingsPanel()
     {
@@ -2655,7 +2710,20 @@ internal sealed partial class MainForm : Form
             SetOverlayOpacity(_ovlOpacitySlider.Value / 100f);
         };
 
+        var resetPositionBtn = new RoundedFlatButton
+        {
+            Text = Loc.T("オーバーレイの表示位置をリセット"),
+            Dock = DockStyle.Top,
+            Height = 32,
+            ForeColor = t.TextPrimary,
+            BaseColor = t.ButtonBg,
+            CornerRadius = 8,
+            Cursor = Cursors.Hand,
+        };
+        resetPositionBtn.Click += (_, _) => ResetOverlayLocation();
+
         // Dock=Top は後から追加したものが上に積まれるため逆順で追加する
+        _overlaySettingsPanel.Controls.Add(resetPositionBtn);
         _overlaySettingsPanel.Controls.Add(_ovlOpacitySlider);
         _overlaySettingsPanel.Controls.Add(_ovlOpacityLabel);
         _overlaySettingsPanel.Controls.Add(_ovlFrameCheck);
@@ -2712,8 +2780,14 @@ internal sealed partial class MainForm : Form
 
         int rightTop = margin;
         int rightHeight = Math.Max(40, _overlayFrame.Top - gap - rightTop);
-        _rightPanel.Size = new Size(panelWidth, rightHeight);
-        _rightPanel.Location = new Point(rightX, rightTop);
+        int pickerWidth = _sidebarCollapsed ? 58 : panelWidth;
+        int pickerHeight = _sidebarCollapsed ? 58 : rightHeight;
+        _rightPanel.Size = new Size(pickerWidth, pickerHeight);
+        _rightPanel.Location = new Point(clientWidth - margin - pickerWidth, rightTop);
+        _rightPanel.BackColor = Theme.Current.Surface;
+        _sidebarContent.BackColor = Theme.Current.Surface;
+        if (_treeArea != null) _treeArea.BackColor = Theme.Current.TreeBg;
+        ApplyRoundedRegion(_rightPanel, CornerRadius + 4);
 
         // オーバーレイ設定パネルはファイル選択画面の下部に重ねる
         int settingsHeight = Math.Min(OverlaySettingsHeight, Math.Max(60, clientHeight - margin * 2));
@@ -2729,8 +2803,18 @@ internal sealed partial class MainForm : Form
     private void WireCanvasEvents()
     {
         _canvas.ZoomChanged += (_, _) => { UpdateZoomText(); UpdateItemPanelPosition(); };
-        _canvas.MouseDown += (_, _) => { if (_uiHidden) RestoreUi(); };
-        _canvas.SelectionChanged += (_, _) => { SyncMenuState(); UpdateItemPanel(); };
+        _canvas.MouseDown += (_, _) =>
+        {
+            _itemPanelRequested = false;
+            UpdateItemPanel();
+            if (_uiHidden) RestoreUi();
+        };
+        _canvas.SelectionChanged += (_, _) =>
+        {
+            _itemPanelRequested = false;
+            SyncMenuState();
+            UpdateItemPanel();
+        };
         // パンやドラッグ移動に合わせて選択メニューを追従させる
         // 操作中の非表示⇔操作後の再表示も含めて毎回評価する
         _canvas.CanvasUpdated += (_, _) => UpdateItemPanel();
@@ -2739,21 +2823,8 @@ internal sealed partial class MainForm : Form
 
     private void Canvas_ItemContextMenuRequested(object? sender, ItemContextMenuEventArgs e)
     {
-        var menu = new ContextMenuStrip { Renderer = new ThemedToolStripRenderer(), BackColor = Theme.Current.Surface, ForeColor = Theme.Current.TextPrimary };
-        RoundDropDownCorners(menu);
-        menu.Items.Add("複製", null, (_, _) => _canvas.DuplicateSelected());
-        menu.Items.Add("削除", null, (_, _) => _canvas.DeleteSelected());
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("右に90°回転", null, (_, _) => _canvas.RotateSelected(90));
-        menu.Items.Add("左に90°回転", null, (_, _) => _canvas.RotateSelected(-90));
-        menu.Items.Add("左右反転", null, (_, _) => _canvas.FlipSelected(true));
-        menu.Items.Add("上下反転", null, (_, _) => _canvas.FlipSelected(false));
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("最前面へ", null, (_, _) => _canvas.ReorderSelected(+1, true));
-        menu.Items.Add("最背面へ", null, (_, _) => _canvas.ReorderSelected(-1, true));
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("トリミング解除", null, (_, _) => _canvas.ResetCropSelected());
-        menu.Show(_canvas, e.Location);
+        _itemPanelRequested = true;
+        UpdateItemPanel();
     }
 
     private void WireDragDrop()
@@ -2892,14 +2963,20 @@ internal sealed partial class MainForm : Form
 
     private async Task<bool> AddImageFromUrlAsync(Uri uri, bool showError = true)
     {
+        string? path = null;
         try
         {
-            var path = await DownloadImageAsync(uri);
-            _canvas.AddImage(path);
+            path = await DownloadImageAsync(uri);
+            var image = ImageDecoder.Decode(path);
+            _canvas.AddImage(image, path);
             return true;
         }
         catch (Exception ex)
         {
+            if (path != null)
+            {
+                try { File.Delete(path); } catch { }
+            }
             if (showError) MessageBox.Show(this, ex.Message, Loc.T("URL画像を読み込めません"), MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
         }
@@ -2910,6 +2987,11 @@ internal sealed partial class MainForm : Form
         using var response = await Http.GetAsync(uri);
         response.EnsureSuccessStatusCode();
         var mediaType = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (mediaType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+            || mediaType.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(Loc.T("URLの応答は画像ではありません。"));
+        }
         var ext = ExtensionFromContentType(mediaType);
         if (string.IsNullOrEmpty(ext)) ext = Path.GetExtension(uri.LocalPath);
         if (!ImageDecoder.SupportedExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)) ext = ".png";
@@ -2946,7 +3028,7 @@ internal sealed partial class MainForm : Form
         return path;
     }
 
-    private static IEnumerable<string> ExtractUrlsFromData(IDataObject data)
+    internal static IEnumerable<string> ExtractUrlsFromData(IDataObject data)
     {
         foreach (var format in new[] { "UniformResourceLocatorW", "UniformResourceLocator", DataFormats.UnicodeText, DataFormats.Text, DataFormats.Html })
         {
@@ -2954,7 +3036,7 @@ internal sealed partial class MainForm : Form
             if (data.GetData(format) is not string text) continue;
             foreach (Match match in Regex.Matches(text, @"https?://[^\s""'<>]+", RegexOptions.IgnoreCase))
             {
-                yield return match.Value;
+                yield return System.Net.WebUtility.HtmlDecode(match.Value);
             }
         }
     }
@@ -3363,6 +3445,7 @@ internal sealed partial class MainForm : Form
         {
             if (_overlayForm != null)
             {
+                StoreOverlayLocation(ActiveDoc, _overlayForm);
                 _overlayForm.Close();
                 _overlayForm = null;
             }
@@ -3399,12 +3482,13 @@ internal sealed partial class MainForm : Form
         }
         else
         {
-            if (_overlayForm != null)
+            if (_overlayForm is { } overlay)
             {
-                StoreOverlayLocation(ActiveDoc);
+                var doc = ActiveDoc;
+                StoreOverlayLocation(doc, overlay);
                 _canvas.CanvasUpdated -= Canvas_CanvasUpdated;
-                _overlayForm.Close();
                 _overlayForm = null;
+                overlay.Close();
                 SaveSession();
             }
         }
@@ -3413,7 +3497,11 @@ internal sealed partial class MainForm : Form
 
     private Point GetOverlayLocation(CanvasDocument? doc, Rectangle clientRect)
     {
-        if (doc?.OverlayLocation is { } saved && Screen.AllScreens.Any(screen => screen.Bounds.Contains(saved))) return saved;
+        if (doc?.OverlayLocation is { } saved)
+        {
+            var savedBounds = new Rectangle(saved, clientRect.Size);
+            if (Screen.AllScreens.Any(screen => screen.WorkingArea.IntersectsWith(savedBounds))) return saved;
+        }
         return new Point(clientRect.X + 20, clientRect.Y + 20);
     }
 
@@ -3430,6 +3518,22 @@ internal sealed partial class MainForm : Form
     {
         overlay ??= _overlayForm;
         if (doc != null && overlay != null) doc.OverlayLocation = overlay.Location;
+    }
+
+    private void ResetOverlayLocation()
+    {
+        var doc = ActiveDoc;
+        if (doc == null) return;
+
+        doc.OverlayLocation = null;
+        if (_overlayForm != null)
+        {
+            var clientRect = _canvas.RectangleToScreen(_canvas.ClientRectangle);
+            var location = GetOverlayLocation(doc, clientRect);
+            _overlayForm.Location = location;
+            doc.OverlayLocation = location;
+        }
+        SaveSession();
     }
 
     private void Canvas_CanvasUpdated(object? sender, EventArgs e) => _overlayForm?.Invalidate();
@@ -3576,15 +3680,30 @@ internal sealed partial class MainForm : Form
         if (_viewerFullscreen || WindowState == FormWindowState.Maximized)
         {
             Region = null;
+            SetNativeWindowCorners(false);
             UpdateSidebarBounds();
             return;
         }
-        if (Width > 0 && Height > 0)
+
+        // Win11ではDWMの角丸を使う。Region切り抜きと違い、外周にもアンチエイリアスが効く。
+        if (SetNativeWindowCorners(true))
+        {
+            Region = null;
+        }
+        else if (Width > 0 && Height > 0)
         {
             using var path = CreateRoundedRectPath(ClientRectangle, CornerRadius);
             Region = new Region(path);
         }
         UpdateSidebarBounds();
+    }
+
+    private bool SetNativeWindowCorners(bool rounded)
+    {
+        if (!IsHandleCreated || !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return false;
+        var preference = rounded ? DWMWCP_ROUND : DWMWCP_DONOTROUND;
+        return DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE,
+            ref preference, Marshal.SizeOf<int>()) >= 0;
     }
 
     protected override void WndProc(ref Message m)
@@ -3950,7 +4069,7 @@ internal sealed partial class MainForm : Form
 
     private void ShowAbout()
     {
-        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.2";
+        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.3";
         MessageBox.Show(this,
             $"Multi Image Canvas\n{Loc.T("バージョン情報")}: {version}",
             Loc.T("バージョン情報"),
@@ -3963,6 +4082,7 @@ internal sealed partial class MainForm : Form
     private void HideUi()
     {
         if (_uiHidden) return;
+        _itemPanelRequested = false;
         _menuBar.Visible = false;
         _viewerBar.Visible = false;
         _sessionTitleLabel.Visible = false;
@@ -4051,6 +4171,14 @@ internal sealed partial class MainForm : Form
         ApplyLanguageRecursive(_overlaySettingsPanel);
         ApplyLanguageRecursive(_overlayFrame);
         ApplyLanguageRecursive(_archiveBrowserPanel);
+        if (_sidebarCollapseBtn != null)
+        {
+            _sidebarToolTip.SetToolTip(_sidebarCollapseBtn,
+                Loc.T(_sidebarCollapsed ? "ファイル選択メニューを復元" : "ファイル選択メニューを最小化"));
+        }
+        if (_viewTreeBtn != null) _sidebarToolTip.SetToolTip(_viewTreeBtn, Loc.T("フォルダツリー"));
+        if (_viewThumbsBtn != null) _sidebarToolTip.SetToolTip(_viewThumbsBtn, Loc.T("サムネイル一覧"));
+        if (_viewLayersBtn != null) _sidebarToolTip.SetToolTip(_viewLayersBtn, Loc.T("レイヤー"));
         UpdateMenuShortcutTexts();
         _canvas.Invalidate();
     }

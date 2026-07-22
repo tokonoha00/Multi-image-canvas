@@ -43,7 +43,7 @@ internal sealed class SettingsForm : Form
     public bool GridSnap => _gridSnapCheck.Checked;
     public int ImageImportScalePercent => int.TryParse((_imageScaleCombo.SelectedItem as string)?.TrimEnd('%'), out var value) ? value : 100;
     public string Language => _languageCombo.SelectedItem as string ?? Loc.Japanese;
-    public string OverlayAnimation => Loc.J(_animCombo.SelectedItem as string ?? "ブロック");
+    public string OverlayAnimation => Loc.J(_animCombo.SelectedItem as string ?? "フェード");
 
     public event EventHandler? Applied;
 
@@ -62,7 +62,7 @@ internal sealed class SettingsForm : Form
         _appliedGridSnap = gridSnap;
         _appliedImageScalePercent = new[] { 25, 50, 75, 100, 125, 150, 200 }.OrderBy(v => Math.Abs(v - imageScalePercent)).First();
         _appliedLanguage = string.IsNullOrWhiteSpace(language) ? Loc.Japanese : language;
-        _appliedOverlayAnimation = OverlayAnimations.Names.Contains(overlayAnimation) ? overlayAnimation : "ブロック";
+        _appliedOverlayAnimation = OverlayAnimations.Names.Contains(overlayAnimation) ? overlayAnimation : "フェード";
 
         var t = Theme.Current;
         Text = Loc.T("設定");

@@ -1,6 +1,6 @@
 #define AppName "Multi Image Canvas"
 #ifndef AppVersion
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.3"
 #endif
 #ifndef PublishDir
 #define PublishDir "publish"
@@ -26,6 +26,8 @@ SolidCompression=yes
 WizardStyle=classic
 PrivilegesRequired=admin
 ChangesAssociations=yes
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"

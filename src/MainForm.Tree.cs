@@ -15,7 +15,6 @@ internal sealed partial class MainForm
     private static extern int GetScrollInfo(IntPtr hwnd, int fnBar, ref SCROLLINFO lpsi);
     [DllImport("user32.dll")]
     private static extern int SetScrollInfo(IntPtr hwnd, int fnBar, ref SCROLLINFO lpsi, bool fRedraw);
-
     private const int SB_VERT = 1;
     private const int SB_HORZ = 0;
     private const int SIF_RANGE = 0x0001;
@@ -136,7 +135,7 @@ internal sealed partial class MainForm
             BackColor = Theme.Current.TreeBg,
         };
 
-        _tree.Dock = DockStyle.Fill;
+        _tree.Dock = DockStyle.None;
         _tree.HideSelection = false;
         _tree.PathSeparator = "\\";
         _tree.BackColor = Theme.Current.TreeBg;
@@ -152,6 +151,13 @@ internal sealed partial class MainForm
         _tree.NodeMouseDoubleClick += (_, e) => OnTreeSelected(e.Node);
 
         treeClipPanel.Controls.Add(_tree);
+        void UpdateTreeBounds(bool hideHorizontal = false) => _tree.SetBounds(
+            0,
+            0,
+            treeClipPanel.ClientSize.Width + SystemInformation.VerticalScrollBarWidth,
+            treeClipPanel.ClientSize.Height + (hideHorizontal ? SystemInformation.HorizontalScrollBarHeight : 0));
+        treeClipPanel.SizeChanged += (_, _) => UpdateTreeBounds(_treeHScrollBar.Visible);
+        UpdateTreeBounds();
 
         _treeScrollBar.Width = 10;
         _treeScrollBar.BackColor = Theme.Current.TreeBg;
@@ -201,6 +207,7 @@ internal sealed partial class MainForm
 
             _treeScrollBar.Visible = needV;
             _treeHScrollBar.Visible = needH;
+            UpdateTreeBounds(needH);
 
             _treeScrollCorner.Visible = needV && needH;
             _treeScrollCorner.SetBounds(treeContainer.Width - sbWidth, treeContainer.Height - sbHeight, sbWidth, sbHeight);
@@ -223,7 +230,7 @@ internal sealed partial class MainForm
 
         _treeScrollTimer.Tick += (s, e) =>
         {
-            if (!_tree.Visible) return;
+            if (!_tree.Visible || !_tree.IsHandleCreated) return;
             var mouseInTree = _tree.ClientRectangle.Contains(_tree.PointToClient(Cursor.Position));
             if (!_tree.Focused && !mouseInTree) return;
             UpdateScrollbarLayout();

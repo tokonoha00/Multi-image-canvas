@@ -7,6 +7,13 @@ namespace MultiImageCanvas;
 // 共通描画ヘルパー
 internal static class ThemePaint
 {
+    public static void ConfigureRounded(Graphics graphics)
+    {
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        graphics.CompositingQuality = CompositingQuality.HighQuality;
+    }
+
     // コントロールの実際の背後の色を返す。
     // 親が Color.Transparent の場合は不透明な祖先まで遡る (角丸UIの角に隙間/黒枠が出る問題の再発防止。
     // 角を塗る際は必ず Parent.BackColor ではなくこれを使うこと)
@@ -113,6 +120,7 @@ internal class RoundedFlatButton : Button
     protected override void OnPaint(PaintEventArgs pevent)
     {
         var g = pevent.Graphics;
+        ThemePaint.ConfigureRounded(g);
         var t = Theme.Current;
 
         // 背景は「実際に背後にある色」で塗る (透明親でも角に隙間や黒枠を出さない)
@@ -129,9 +137,9 @@ internal class RoundedFlatButton : Button
         var rect = new Rectangle(0, 0, Width - 1, Height - 1);
         if (fill != null && rect.Width > 0 && rect.Height > 0)
         {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
             using var brush = new SolidBrush(fill.Value);
-            using var path = CreateRounded(rect, Math.Min(CornerRadius, Math.Min(rect.Width, rect.Height) / 2));
+            var radius = Math.Min(CornerRadius, Math.Min(rect.Width, rect.Height) / 2);
+            using var path = CreateRounded(rect, radius);
             g.FillPath(brush, path);
         }
 
@@ -212,7 +220,7 @@ internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
             {
                 using var gradientBrush = new LinearGradientBrush(bounds, Theme.Current.Accent, Theme.Current.AccentDark, LinearGradientMode.Horizontal);
                 using var gradientPath = CreateRoundedRect(bounds, 10);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
+                ThemePaint.ConfigureRounded(g);
                 g.FillPath(gradientBrush, gradientPath);
                 return;
             }
@@ -223,7 +231,7 @@ internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
 
             using var brush = new SolidBrush(bgColor);
             using var path = CreateRoundedRect(bounds, 10);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
+            ThemePaint.ConfigureRounded(g);
             g.FillPath(brush, path);
         }
     }
@@ -233,6 +241,11 @@ internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
         if (e.Item is SlidingToolStripButton sliding && sliding.RenderOffsetX != 0)
         {
             e.TextRectangle = new Rectangle(e.TextRectangle.X + sliding.RenderOffsetX, e.TextRectangle.Y, e.TextRectangle.Width, e.TextRectangle.Height);
+        }
+        if (e.Item.Owner is ToolStripDropDown)
+        {
+            e.TextRectangle = new Rectangle(e.TextRectangle.X, 0, e.TextRectangle.Width, e.Item.Height);
+            e.TextFormat |= TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
         }
         // 閉じるボタンのホバー中はグリフを白にする (赤背景とのコントラスト)
         if (e.Item is CaptionToolButton { Kind: CaptionKind.Close } && (e.Item.Selected || e.Item.Pressed))
@@ -284,7 +297,7 @@ internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
             if (topLevel)
             {
                 using var path = CreateRoundedRect(rect, 8);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
+                ThemePaint.ConfigureRounded(g);
                 g.FillPath(brush, path);
             }
             else
@@ -292,6 +305,39 @@ internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
                 g.FillRectangle(brush, rect);
             }
         }
+
+        if (!topLevel && e.Item is ToolStripMenuItem { CheckOnClick: true } item)
+        {
+            var checkBounds = new Rectangle(6, Math.Max(2, (e.Item.Height - 16) / 2), 16, 16);
+            using var checkPath = CreateRoundedRect(checkBounds, 5);
+            using var checkBrush = new SolidBrush(item.Checked ? Theme.Current.Accent : Theme.Current.SurfaceLight);
+            using var checkPen = new Pen(item.Checked ? Theme.Current.AccentDark : Theme.Current.SurfaceBorder);
+            ThemePaint.ConfigureRounded(g);
+            g.FillPath(checkBrush, checkPath);
+            g.DrawPath(checkPen, checkPath);
+            if (item.Checked)
+            {
+                using var markPen = new Pen(Color.White, 1.8f)
+                {
+                    StartCap = LineCap.Round,
+                    EndCap = LineCap.Round,
+                };
+                g.DrawLines(markPen,
+                new Point[]
+                {
+                    new Point(checkBounds.Left + 4, checkBounds.Top + 8),
+                    new Point(checkBounds.Left + 7, checkBounds.Top + 11),
+                    new Point(checkBounds.Left + 12, checkBounds.Top + 5),
+                });
+            }
+        }
+    }
+
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+    {
+        // CheckOnClick項目はOnRenderMenuItemBackgroundでテーマ対応の角丸表示にする。
+        if (e.Item is ToolStripMenuItem { CheckOnClick: true }) return;
+        base.OnRenderItemCheck(e);
     }
 
     protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
@@ -407,7 +453,7 @@ internal sealed class CustomScrollBar : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        ThemePaint.ConfigureRounded(e.Graphics);
         e.Graphics.Clear(BackColor);
 
         var thumb = GetThumbRect();
@@ -555,7 +601,7 @@ internal class GamingButton : Button
     protected override void OnPaint(PaintEventArgs pevent)
     {
         var g = pevent.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
+        ThemePaint.ConfigureRounded(g);
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
         var parentColor = ThemePaint.GetBackdrop(this);
@@ -650,7 +696,7 @@ internal sealed class FlatSlider : Control
     {
         var g = e.Graphics;
         g.Clear(BackColor);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
+        ThemePaint.ConfigureRounded(g);
 
         var track = new Rectangle(8, Height / 2 - 2, Math.Max(1, Width - 22), 4);
         using (var bg = new SolidBrush(BackColor))
