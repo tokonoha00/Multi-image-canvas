@@ -1,6 +1,6 @@
 #define AppName "Multi Image Canvas"
 #ifndef AppVersion
-#define AppVersion "1.0.3"
+#define AppVersion "1.0.4"
 #endif
 #ifndef PublishDir
 #define PublishDir "publish"
@@ -34,6 +34,10 @@ Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
 [Files]
 Source: "{#PublishDir}\MultiImageCanvas.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\PRIVACY.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\MultiImageCanvas.exe"; WorkingDir: "{app}"; Check: ShouldCreateStartMenu

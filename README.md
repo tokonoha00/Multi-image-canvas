@@ -5,14 +5,14 @@
 
 ## ダウンロード
 
-最新正式版: **v1.0.3**
+最新正式版: **v1.0.4**
 
 GitHub Releases から用途に合わせて取得してください。
 
-- **インストーラー版**: `MultiImageCanvas-1.0.3-Setup.exe`
+- **インストーラー版**: `MultiImageCanvas-1.0.4-Setup.exe`
   - インストール先、スタートメニュー/デスクトップ追加、画像・キャンバス・セッションファイルの関連付け候補追加を選べます。
   - 既定のインストール先は `C:\Program Files\MultiImageCanvas` です。インストール時に管理者権限の確認が表示されます。
-- **ポータブルZIP版**: `MultiImageCanvas-1.0.3-portable-win-x64.zip`
+- **ポータブルZIP版**: `MultiImageCanvas-1.0.4-portable-win-x64.zip`
   - ZIPを展開して `MultiImageCanvas.exe` を起動します。
   - アプリ本体は展開先から起動できますが、設定・自動保存セッションの既定保存先は `%APPDATA%\MultiImageCanvas` です。
   - 設定も含めて持ち運びたい場合は、環境変数 `MIC_SESSION_DIR` で保存先を任意フォルダに指定してください。

@@ -80,6 +80,7 @@ internal sealed class CaptionToolButton : ToolStripButton
         Margin = Padding.Empty;
         Padding = Padding.Empty;
         AutoSize = false;
+        Overflow = ToolStripItemOverflow.Never;
         Size = new Size(46, 34);
         Font = new Font("Segoe MDL2 Assets", 9.5f);
         Text = kind switch

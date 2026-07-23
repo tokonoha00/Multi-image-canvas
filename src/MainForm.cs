@@ -28,6 +28,7 @@ internal sealed partial class MainForm : Form
     private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     private const int DWMWCP_DONOTROUND = 1;
     private const int DWMWCP_ROUND = 2;
+    private const int WM_SETREDRAW = 0x000B;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct TRACKMOUSEEVENT
@@ -162,7 +163,6 @@ internal sealed partial class MainForm : Form
     private SessionData? _pendingSession;
     private AppSettingsData _appSettings = new();
     private string? _sessionFilePath;
-    private bool _closingConfirmed;
 
     // ビュアーモード (エクスプローラーから画像を開いた時の閲覧専用UI)
     private bool _viewerMode;
@@ -185,7 +185,7 @@ internal sealed partial class MainForm : Form
     private FlowLayoutPanel? _pageGroup;
     private Label? _viewerPageLabel;
     private Button? _viewerPrevBtn, _viewerNextBtn, _viewerFullscreenBtn;
-    private readonly System.Windows.Forms.Timer _viewerChromeTimer = new() { Interval = 80 };
+    private readonly System.Windows.Forms.Timer _viewerChromeTimer = new() { Interval = 16 };
     private DateTime _lastViewerActivity = DateTime.UtcNow;
     private Point _lastCursorScreenPos = Point.Empty;
     private float _viewerChromeOpacity;
@@ -203,14 +203,20 @@ internal sealed partial class MainForm : Form
     private Rectangle _viewerRestoreBounds;
     private FormWindowState _viewerRestoreWindowState;
     private Padding _viewerRestorePadding;
+    private IntPtr _nativeCornerHandle;
+    private bool? _nativeCornersRounded;
+    private bool _liveResizing;
+    private bool _editorUiBuilt;
+    private bool _archiveBrowserBuilt;
 
     private const int CornerRadius = 14;
 
     public MainForm(string[]? startupArgs = null)
     {
         _startupArgs = startupArgs ?? [];
+        _viewerMode = DetectViewerMode(_startupArgs);
         // テーマはコントロール生成前に適用する
-        _pendingSession = SessionStore.Load();
+        if (!_viewerMode) _pendingSession = SessionStore.Load();
         var savedSettings = AppSettingsStore.Load();
         _appSettings = savedSettings ?? AppSettingsStore.LoadLegacySession() ?? new AppSettingsData();
         if (savedSettings == null) AppSettingsStore.Save(_appSettings);
@@ -228,20 +234,20 @@ internal sealed partial class MainForm : Form
         Padding = new Padding(12, 0, 12, 12);
         BackColor = Theme.Current.Background;
         ForeColor = Theme.Current.TextPrimary;
+        DoubleBuffered = true;
 
         try { Font = new Font("Segoe UI Variable Display", 9f); }
         catch { try { Font = new Font("Segoe UI", 9f); } catch { /* フォールバック */ } }
 
-        _viewerMode = DetectViewerMode(_startupArgs);
-
-        BuildMenuBar();
         BuildMainLayout();
-        WireCanvasEvents();
         WireDragDrop();
-        BuildInitialTree();
         if (_viewerMode) EnterViewerMode();
-        else RestoreSession();
-        ApplyLanguageToControls();
+        else
+        {
+            BuildEditorUi();
+            RestoreSession();
+            ApplyLanguageToControls();
+        }
 
         Theme.Changed += (_, _) => ApplyThemeToControls();
 
@@ -250,10 +256,14 @@ internal sealed partial class MainForm : Form
 
         Shown += (_, _) =>
         {
-            ApplyTreeTheme();
-            BeginInvoke(new Action(() => SetSidebarView(_sidebarView)));
-            BeginInvoke(new Action(StartLoadQuickAccessExtras));
-            BeginInvoke(new Action(() => _ = OpenStartupInputsAsync()));
+            if (!_viewerMode)
+            {
+                ApplyTreeTheme();
+                BeginInvoke(new Action(() => SetSidebarView(_sidebarView)));
+                BeginInvoke(new Action(StartLoadQuickAccessExtras));
+            }
+            if (_viewerMode) _ = OpenStartupInputsAsync();
+            else BeginInvoke(new Action(() => _ = OpenStartupInputsAsync()));
 
             // UI自動テスト用フック: 起動直後に設定画面を開く
             if (Environment.GetEnvironmentVariable("MIC_OPEN_SETTINGS") == "1")
@@ -272,23 +282,6 @@ internal sealed partial class MainForm : Form
                 return;
             }
 
-            if (!_closingConfirmed)
-            {
-                var decision = ShowSessionDecision(Loc.T("アプリを閉じる"),
-                    Loc.T("アプリを閉じますか？\n外部保存していないセッションは復元できません。"),
-                    Loc.T("閉じる"));
-                if (decision == SessionDecision.Cancel)
-                {
-                    e.Cancel = true;
-                    return;
-                }
-                if (decision == SessionDecision.Save && !SaveSessionToFile(showDone: false))
-                {
-                    e.Cancel = true;
-                    return;
-                }
-                _closingConfirmed = true;
-            }
             SaveSession();
             ToggleOverlayMode(false);
         };
@@ -438,9 +431,15 @@ internal sealed partial class MainForm : Form
     private void AddDocument(CanvasDocument doc, bool select, bool save = true)
     {
         _docs.Add(doc);
-        doc.Changed += (_, _) => { RebuildDocTabs(); SyncMenuState(); UpdateItemPanel(); };
-        doc.Undo.StateChanged += (_, _) => SyncMenuState();
-        RebuildDocTabs();
+        doc.Changed += (_, _) =>
+        {
+            if (!_editorUiBuilt) return;
+            RebuildDocTabs();
+            SyncMenuState();
+            UpdateItemPanel();
+        };
+        doc.Undo.StateChanged += (_, _) => { if (_editorUiBuilt) SyncMenuState(); };
+        if (_editorUiBuilt) RebuildDocTabs();
         if (select) SelectDocument(_docs.Count - 1);
         if (save && IsHandleCreated) SaveSession();
     }
@@ -455,6 +454,7 @@ internal sealed partial class MainForm : Form
         _canvas.Document = doc;
         if (_overlayForm != null) PositionOverlayForDocument(doc);
         _layers?.AttachDocument(doc);
+        if (!_editorUiBuilt) return;
         RebuildDocTabs();
         SyncMenuState();
         UpdateZoomText();
@@ -996,48 +996,52 @@ internal sealed partial class MainForm : Form
                 ShowViewerChrome();
                 return;
             }
-            InitViewerFileList(first);
+            PrepareViewerFile(first);
             await OpenViewerFileAsync(first, ++_viewerOpenVersion);
             ShowViewerChrome();
+            _ = LoadViewerFileListAsync(first, _viewerOpenVersion);
             return;
         }
 
         await OpenInputsAsync(_startupArgs);
     }
 
-    private void InitViewerFileList(string path)
+    private void PrepareViewerFile(string path)
     {
         _archiveSource = null;
         HideArchiveBrowser();
         _viewerCurrentPath = path;
-        _viewerFiles = [];
-        _viewerFileIndex = -1;
+        _viewerFiles = [path];
+        _viewerFileIndex = 0;
+    }
 
+    private async Task LoadViewerFileListAsync(string path, int version)
+    {
         var dir = Path.GetDirectoryName(path);
-        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
-        {
-            _viewerFiles.Add(path);
-            _viewerFileIndex = 0;
-            return;
-        }
+        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
 
         try
         {
-            _viewerFiles = Directory.EnumerateFiles(dir)
+            var files = await Task.Run(() => Directory.EnumerateFiles(dir)
                 .Where(ImageDecoder.IsSupported)
                 .OrderBy(Path.GetFileName, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
-            _viewerFileIndex = _viewerFiles.FindIndex(f => string.Equals(f, path, StringComparison.OrdinalIgnoreCase));
-            if (_viewerFileIndex < 0)
+                .ToList());
+            if (version != _viewerOpenVersion || !string.Equals(_viewerCurrentPath, path, StringComparison.OrdinalIgnoreCase)) return;
+
+            var index = files.FindIndex(f => string.Equals(f, path, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
             {
-                _viewerFiles.Insert(0, path);
-                _viewerFileIndex = 0;
+                files.Insert(0, path);
+                index = 0;
             }
+            _viewerFiles = files;
+            _viewerFileIndex = index;
+            UpdateViewerNavState();
+            QueueViewerPreloads();
         }
         catch
         {
-            _viewerFiles = [path];
-            _viewerFileIndex = 0;
+            // 初回画像はすでに表示済みなので、フォルダ一覧の失敗は無視する
         }
     }
 
@@ -1236,6 +1240,13 @@ internal sealed partial class MainForm : Form
         {
             if (_viewerTitle != null) _viewerTitle.Text = Path.GetFileName(first);
             Text = Path.GetFileName(first) + " - Multi Image Canvas";
+            if (!ArchiveImageSource.IsSupportedArchivePath(first))
+            {
+                lock (_viewerPreloadLock)
+                {
+                    _viewerPreloads[first] = Task.Run(() => DecodeViewerImage(first, null));
+                }
+            }
         }
     }
 
@@ -1311,13 +1322,15 @@ internal sealed partial class MainForm : Form
     {
         if (_viewerEditBtn == null || _viewerTitle == null) return;
 
-        // キャプションボタン(閉じる/最大化/最小化)の合計幅
-        int captionWidth = _maximizeButtons.Count > 0 ? 46 * 3 : 0;
+        // 右上のウィンドウ操作は常に優先し、残り幅だけを編集ボタンとタイトルで使う。
+        int captionWidth = _viewerBar.Items.OfType<CaptionToolButton>().Sum(button => button.Width + button.Margin.Horizontal);
         int available = _viewerBar.Width - _viewerBar.Padding.Horizontal - captionWidth;
 
+        bool showEdit = available >= 34;
         bool showFullEdit = available >= 210;
         bool showTitle = available >= 210 + 90; // 編集ボタン全文 + タイトルの余地
 
+        if (_viewerEditBtn.Visible != showEdit) _viewerEditBtn.Visible = showEdit;
         var wantedEditText = showFullEdit ? _viewerEditFullText : " 🖊 ";
         if (_viewerEditBtn.Text != wantedEditText) _viewerEditBtn.Text = wantedEditText;
         _viewerEditBtn.AutoToolTip = !showFullEdit;
@@ -1558,6 +1571,7 @@ internal sealed partial class MainForm : Form
             if (hasPage && _pageGroup != null) { _pageGroup.Location = new Point(x, 0); x += pageSize.Width + gap; }
             if (_viewerFullscreenBtn != null) _viewerFullscreenBtn.Location = new Point(Math.Min(x, Math.Max(0, contentWidth - fullSize.Width)), 0);
         }
+        ApplyRoundedRegion(_viewerNavPanel, 12);
         _viewerNavPanel.BringToFront();
     }
 
@@ -1615,17 +1629,26 @@ internal sealed partial class MainForm : Form
 
         // ウィンドウ外に出る or 3秒間カーソルが動かない → フェードアウト
         bool active = pointerInside && (DateTime.UtcNow - _lastViewerActivity).TotalSeconds < 3;
-        var step = active ? 0.25f : -0.22f;
+        var step = active ? 0.05f : -0.04f;
         _viewerChromeOpacity = Math.Clamp(_viewerChromeOpacity + step, 0f, 1f);
+
+        if (_viewerChromeOpacity <= 0f)
+        {
+            var oldBounds = _viewerNavPanel.Bounds;
+            _viewerNavPanel.Visible = false;
+            _canvas.Invalidate(oldBounds, true);
+            _canvas.Update();
+            return;
+        }
+
+        _viewerNavPanel.Visible = true;
         ApplyViewerNavOpacity(_viewerChromeOpacity);
-        _viewerNavPanel.Visible = _viewerChromeOpacity > 0f;
     }
 
     private void ApplyViewerNavOpacity(float opacity)
     {
         var t = Theme.Current;
         _viewerNavPanel.BackColor = Blend(t.CanvasBg, t.Surface, opacity * 0.95f);
-        ApplyRoundedRegion(_viewerNavPanel, 12);
 
         var fore = Blend(t.CanvasBg, t.TextPrimary, opacity);
         foreach (Control c in _viewerNavPanel.Controls)
@@ -1719,6 +1742,7 @@ internal sealed partial class MainForm : Form
         SetGifControlsVisible(false);
         _canvas.ReadOnlyView = false;
         _canvas.ShutdownViewerAnimation(); // 自前駆動をやめてImageAnimatorへ戻す
+        BuildEditorUi();
 
         // ビュアー起動中はセッションを読み書きしていないため、ここで前回タブを復元する
         var s = SessionStore.Load();
@@ -1751,6 +1775,9 @@ internal sealed partial class MainForm : Form
         _docTabs.Visible = true;
         _rightPanel.Visible = true;
         _overlayFrame.Visible = true;
+        ApplyTreeTheme();
+        SetSidebarView(_sidebarView);
+        StartLoadQuickAccessExtras();
         EnsureTopBarOrder();
 
         RebuildDocTabs();
@@ -2075,33 +2102,50 @@ internal sealed partial class MainForm : Form
     {
         _canvas.Dock = DockStyle.Fill;
 
+        BuildViewerNavPanel();
+
+        _canvas.Controls.Add(_viewerNavPanel);
+
+        ApplyRoundedRegion(_viewerNavPanel, 12);
+
+        Controls.Add(_canvas);
+        BuildViewerBar();
+        Controls.Add(_viewerBar);
+
+        _viewerNavPanel.BringToFront();
+
+        _canvas.SizeChanged += (_, _) =>
+        {
+            if (_editorUiBuilt) UpdateSidebarBounds();
+            UpdateViewerNavPanelBounds();
+            if (_archiveBrowserBuilt) UpdateArchiveBrowserBounds();
+        };
+    }
+
+    private void BuildEditorUi()
+    {
+        if (_editorUiBuilt) return;
+        _editorUiBuilt = true;
+
+        BuildMenuBar();
         BuildRightPanel();
         BuildItemPanel();
         BuildOverlayFrame();
-        BuildViewerNavPanel();
-        BuildArchiveBrowserPanel();
 
         _canvas.Controls.Add(_rightPanel);
         _canvas.Controls.Add(_itemPanel);
         _canvas.Controls.Add(_overlaySettingsPanel);
         _canvas.Controls.Add(_overlayFrame);
-        _canvas.Controls.Add(_viewerNavPanel);
-        _canvas.Controls.Add(_archiveBrowserPanel);
 
         ApplyRoundedRegion(_rightPanel, CornerRadius + 4);
         ApplyRoundedRegion(_itemPanel, CornerRadius + 4);
         ApplyRoundedRegion(_overlaySettingsPanel, CornerRadius + 4);
         ApplyRoundedRegion(_overlayFrame, CornerRadius + 4);
-        ApplyRoundedRegion(_viewerNavPanel, 12);
-        ApplyRoundedRegion(_archiveBrowserPanel, CornerRadius + 4);
 
-        Controls.Add(_canvas);
         Controls.Add(_docTabs);
         Controls.Add(_menuBar);
-        BuildViewerBar();
-        Controls.Add(_viewerBar);
-        EnsureTopBarOrder();
         BuildSessionTitleLabel();
+        EnsureTopBarOrder();
 
         _rightPanel.BringToFront();
         _itemPanel.BringToFront();
@@ -2109,7 +2153,8 @@ internal sealed partial class MainForm : Form
         _viewerNavPanel.BringToFront();
         _archiveBrowserPanel.BringToFront();
 
-        _canvas.SizeChanged += (_, _) => { UpdateSidebarBounds(); UpdateViewerNavPanelBounds(); UpdateArchiveBrowserBounds(); };
+        WireCanvasEvents();
+        BuildInitialTree();
         UpdateSidebarBounds();
     }
 
@@ -2202,40 +2247,56 @@ internal sealed partial class MainForm : Form
 
     private void SetSidebarCollapsed(bool collapsed)
     {
-        _rightPanel.SuspendLayout();
-        _sidebarHeader?.SuspendLayout();
-
-        _sidebarCollapsed = collapsed;
-        _sidebarContent.Visible = false;
-        if (_sidebarPathPanel != null) _sidebarPathPanel.Visible = false;
-        if (_sidebarSwitchRow != null) _sidebarSwitchRow.Visible = false;
-        _rightPanel.AutoScroll = false;
-        _rightPanel.Padding = new Padding(12);
-
-        if (_sidebarHeader != null) _sidebarHeader.Dock = collapsed ? DockStyle.Fill : DockStyle.Top;
-        if (_sidebarCollapseBtn != null)
+        Rectangle previousBounds = _rightPanel.Bounds;
+        bool redrawSuspended = _rightPanel.IsHandleCreated;
+        bool headerRedrawSuspended = _sidebarHeader?.IsHandleCreated == true;
+        if (redrawSuspended) SendMessage(_rightPanel.Handle, WM_SETREDRAW, 0, 0);
+        if (headerRedrawSuspended) SendMessage(_sidebarHeader!.Handle, WM_SETREDRAW, 0, 0);
+        try
         {
-            _sidebarCollapseBtn.Text = collapsed ? "▣" : "−";
-            _sidebarCollapseBtn.Dock = collapsed ? DockStyle.Fill : DockStyle.Right;
-            _sidebarCollapseBtn.Width = 34;
-            _sidebarToolTip.SetToolTip(_sidebarCollapseBtn,
-                Loc.T(collapsed ? "ファイル選択メニューを復元" : "ファイル選択メニューを最小化"));
+            _rightPanel.SuspendLayout();
+            _sidebarHeader?.SuspendLayout();
+
+            _sidebarCollapsed = collapsed;
+            _sidebarContent.Visible = false;
+            if (_sidebarPathPanel != null) _sidebarPathPanel.Visible = false;
+            if (_sidebarSwitchRow != null) _sidebarSwitchRow.Visible = false;
+            _rightPanel.AutoScroll = false;
+            _rightPanel.Padding = new Padding(12);
+
+            if (_sidebarHeader != null) _sidebarHeader.Dock = collapsed ? DockStyle.Fill : DockStyle.Top;
+            if (_sidebarCollapseBtn != null)
+            {
+                _sidebarCollapseBtn.Text = collapsed ? "▣" : "−";
+                _sidebarCollapseBtn.Dock = collapsed ? DockStyle.Fill : DockStyle.Right;
+                _sidebarCollapseBtn.Width = 34;
+                _sidebarToolTip.SetToolTip(_sidebarCollapseBtn,
+                    Loc.T(collapsed ? "ファイル選択メニューを復元" : "ファイル選択メニューを最小化"));
+            }
+
+            if (!collapsed)
+            {
+                _sidebarContent.Visible = true;
+                if (_sidebarPathPanel != null) _sidebarPathPanel.Visible = true;
+                if (_sidebarSwitchRow != null) _sidebarSwitchRow.Visible = true;
+                _rightPanel.AutoScroll = true;
+            }
+
+            UpdateSidebarBounds();
+
+            _sidebarHeader?.ResumeLayout(true);
+            _rightPanel.ResumeLayout(true);
+            _rightPanel.BackColor = Theme.Current.Surface;
         }
-
-        UpdateSidebarBounds();
-
-        if (!collapsed)
+        finally
         {
-            _sidebarContent.Visible = true;
-            if (_sidebarPathPanel != null) _sidebarPathPanel.Visible = true;
-            if (_sidebarSwitchRow != null) _sidebarSwitchRow.Visible = true;
-            _rightPanel.AutoScroll = true;
+            if (headerRedrawSuspended) SendMessage(_sidebarHeader!.Handle, WM_SETREDRAW, 1, 0);
+            if (redrawSuspended) SendMessage(_rightPanel.Handle, WM_SETREDRAW, 1, 0);
+            _sidebarHeader?.Invalidate(true);
+            _rightPanel.Invalidate(true);
+            _canvas.Invalidate(Rectangle.Union(previousBounds, _rightPanel.Bounds), true);
+            _canvas.Update();
         }
-
-        _sidebarHeader?.ResumeLayout(true);
-        _rightPanel.ResumeLayout(true);
-        _rightPanel.BackColor = Theme.Current.Surface;
-        _rightPanel.Invalidate(true);
     }
 
     private void BuildArchiveBrowserPanel()
@@ -2277,6 +2338,16 @@ internal sealed partial class MainForm : Form
         _archiveBrowserPanel.Controls.Add(title);
     }
 
+    private void EnsureArchiveBrowserBuilt()
+    {
+        if (_archiveBrowserBuilt) return;
+        _archiveBrowserBuilt = true;
+        BuildArchiveBrowserPanel();
+        _canvas.Controls.Add(_archiveBrowserPanel);
+        ApplyRoundedRegion(_archiveBrowserPanel, CornerRadius + 4);
+        _archiveBrowserPanel.BringToFront();
+    }
+
     private void ShowArchiveBrowser(ArchiveImageSource source)
     {
         _archiveSearchBox.Clear();
@@ -2305,6 +2376,7 @@ internal sealed partial class MainForm : Form
     {
         try
         {
+            EnsureArchiveBrowserBuilt();
             ClearViewerPreloads();
             var source = await Task.Run(() => new ArchiveImageSource(path));
             if (source.Entries.Count == 0) throw new InvalidDataException(Loc.T("圧縮ファイル内に対応画像がありません。"));
@@ -3108,7 +3180,7 @@ internal sealed partial class MainForm : Form
             Loc.T("現在のセッションの状態が失われます。\n外部保存していないキャンバスは復元できません。"),
             Loc.T("新規"));
         if (decision == SessionDecision.Cancel) return;
-        if (decision == SessionDecision.Save && !SaveSessionToFile(showDone: false)) return;
+        if (decision == SessionDecision.Save && !SaveSessionToFile()) return;
 
         ClearDocuments();
         _sessionFilePath = null;
@@ -3117,7 +3189,7 @@ internal sealed partial class MainForm : Form
         SaveSession();
     }
 
-    private bool SaveSessionAs(bool showDone = true)
+    private bool SaveSessionAs()
     {
         using var dlg = new SaveFileDialog
         {
@@ -3133,7 +3205,6 @@ internal sealed partial class MainForm : Form
             SaveSessionPackage(dlg.FileName);
             _sessionFilePath = dlg.FileName;
             UpdateSessionTitle();
-            if (showDone) MessageBox.Show(this, Loc.T("セッションを保存しました。"), Loc.T("完了"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             return true;
         }
         catch (Exception ex)
@@ -3143,17 +3214,16 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private bool SaveSessionToFile(bool showDone = true)
+    private bool SaveSessionToFile()
     {
         if (string.IsNullOrEmpty(_sessionFilePath))
         {
-            return SaveSessionAs(showDone);
+            return SaveSessionAs();
         }
 
         try
         {
             SaveSessionPackage(_sessionFilePath);
-            if (showDone) MessageBox.Show(this, Loc.T("セッションを保存しました。"), Loc.T("完了"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             return true;
         }
         catch (Exception ex)
@@ -3268,7 +3338,6 @@ internal sealed partial class MainForm : Form
         try
         {
             File.WriteAllText(dlg.FileName, LayoutSerializer.Serialize(doc), Encoding.UTF8);
-            MessageBox.Show(this, Loc.T("キャンバスを保存しました。"), Loc.T("完了"), MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
@@ -3421,7 +3490,6 @@ internal sealed partial class MainForm : Form
         try
         {
             _canvas.ExportPng(dlg.FileName);
-            MessageBox.Show(this, Loc.T("キャンバスを画像として出力しました。"), Loc.T("完了"), MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
@@ -3662,9 +3730,22 @@ internal sealed partial class MainForm : Form
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        UpdateWindowRegion();
+        if (!_liveResizing) UpdateWindowRegion();
         PositionSessionTitle();
         UpdateCaptionGlyphs();
+    }
+
+    protected override void OnResizeBegin(EventArgs e)
+    {
+        _liveResizing = true;
+        base.OnResizeBegin(e);
+    }
+
+    protected override void OnResizeEnd(EventArgs e)
+    {
+        base.OnResizeEnd(e);
+        _liveResizing = false;
+        UpdateWindowRegion();
     }
 
     protected override void OnShown(EventArgs e)
@@ -3679,31 +3760,33 @@ internal sealed partial class MainForm : Form
         // (スナップ最大化時に画面隅へ隙間が出るのを防ぐ)
         if (_viewerFullscreen || WindowState == FormWindowState.Maximized)
         {
-            Region = null;
+            if (Region != null) Region = null;
             SetNativeWindowCorners(false);
-            UpdateSidebarBounds();
             return;
         }
 
         // Win11ではDWMの角丸を使う。Region切り抜きと違い、外周にもアンチエイリアスが効く。
         if (SetNativeWindowCorners(true))
         {
-            Region = null;
+            if (Region != null) Region = null;
         }
         else if (Width > 0 && Height > 0)
         {
             using var path = CreateRoundedRectPath(ClientRectangle, CornerRadius);
             Region = new Region(path);
         }
-        UpdateSidebarBounds();
     }
 
     private bool SetNativeWindowCorners(bool rounded)
     {
         if (!IsHandleCreated || !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return false;
+        if (_nativeCornerHandle == Handle && _nativeCornersRounded == rounded) return true;
         var preference = rounded ? DWMWCP_ROUND : DWMWCP_DONOTROUND;
-        return DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE,
-            ref preference, Marshal.SizeOf<int>()) >= 0;
+        if (DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE,
+                ref preference, Marshal.SizeOf<int>()) < 0) return false;
+        _nativeCornerHandle = Handle;
+        _nativeCornersRounded = rounded;
+        return true;
     }
 
     protected override void WndProc(ref Message m)
@@ -4069,7 +4152,7 @@ internal sealed partial class MainForm : Form
 
     private void ShowAbout()
     {
-        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.3";
+        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.4";
         MessageBox.Show(this,
             $"Multi Image Canvas\n{Loc.T("バージョン情報")}: {version}",
             Loc.T("バージョン情報"),

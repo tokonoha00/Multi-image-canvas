@@ -1,7 +1,7 @@
 # Build the portable distribution package (self-contained; no .NET install required).
 # Output: <repo>\dist\MultiImageCanvas-<version>-portable-win-x64.zip
 param(
-    [string]$Version = "1.0.3",
+    [string]$Version = "1.0.4",
     [string]$ShareDir = ""
 )
 $ErrorActionPreference = "Stop"
@@ -29,6 +29,9 @@ if ($LASTEXITCODE -ne 0) { Write-Output "publish failed"; exit 1 }
 # remove debug symbols from the package
 Get-ChildItem $outDir -Filter *.pdb -ErrorAction SilentlyContinue | Remove-Item -Force
 Copy-Item -LiteralPath (Join-Path $repo "README.md") -Destination (Join-Path $outDir "README.md") -Force
+Copy-Item -LiteralPath (Join-Path $repo "LICENSE") -Destination (Join-Path $outDir "LICENSE") -Force
+Copy-Item -LiteralPath (Join-Path $repo "NOTICE.md") -Destination (Join-Path $outDir "NOTICE.md") -Force
+Copy-Item -LiteralPath (Join-Path $repo "PRIVACY.md") -Destination (Join-Path $outDir "PRIVACY.md") -Force
 Copy-Item -LiteralPath (Join-Path $repo "THIRD_PARTY_NOTICES.md") -Destination (Join-Path $outDir "THIRD_PARTY_NOTICES.md") -Force
 
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
