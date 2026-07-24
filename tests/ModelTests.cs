@@ -41,6 +41,19 @@ public class DragDropTests
     }
 }
 
+public class WindowHitTestTests
+{
+    [Fact]
+    public void DecodeScreenPoint_PreservesNegativeMonitorCoordinates()
+    {
+        const short x = -1200;
+        const short y = 900;
+        var packed = new IntPtr(unchecked((ushort)x) | ((int)(ushort)y << 16));
+
+        Assert.Equal(new Point(x, y), MainForm.DecodeScreenPoint(packed));
+    }
+}
+
 public class GeometryTests
 {
     [Fact]
@@ -397,6 +410,38 @@ public class LayoutSerializerTests : IDisposable
     }
 
     [Fact]
+    public void SessionSerialization_RoundTripsCanvasIdsAndSwitchShortcuts()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var session = new SessionData
+        {
+            CanvasIds = [first, second],
+            CanvasSwitchShortcuts = new Dictionary<Guid, int>
+            {
+                [first] = (int)(Keys.Control | Keys.Alt | Keys.D1),
+                [second] = (int)Keys.F13,
+            },
+        };
+
+        var loaded = SessionStore.Deserialize(SessionStore.Serialize(session));
+
+        Assert.Equal([first, second], loaded!.CanvasIds);
+        Assert.Equal((int)(Keys.Control | Keys.Alt | Keys.D1), loaded.CanvasSwitchShortcuts![first]);
+        Assert.Equal((int)Keys.F13, loaded.CanvasSwitchShortcuts[second]);
+    }
+
+    [Fact]
+    public void SessionSerialization_OldDataLeavesCanvasIdentityOptional()
+    {
+        var loaded = SessionStore.Deserialize("{\"Version\":1,\"Tabs\":[]}");
+
+        Assert.NotNull(loaded);
+        Assert.Null(loaded.CanvasIds);
+        Assert.Null(loaded.CanvasSwitchShortcuts);
+    }
+
+    [Fact]
     public void LayoutSerialization_DoesNotIncludeOverlayLocation()
     {
         using var doc = new CanvasDocument("private placement")
@@ -407,6 +452,74 @@ public class LayoutSerializerTests : IDisposable
         var json = LayoutSerializer.Serialize(doc);
 
         Assert.DoesNotContain("OverlayLocation", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LayoutSerialization_DoesNotIncludeCanvasIdentityOrSwitchShortcut()
+    {
+        using var doc = new CanvasDocument("private shortcut")
+        {
+            SwitchShortcut = Keys.Control | Keys.Alt | Keys.D1,
+        };
+
+        var json = LayoutSerializer.Serialize(doc);
+
+        Assert.DoesNotContain(doc.Id.ToString(), json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SwitchShortcut", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LayoutImport_CreatesNewIdentityWithoutSwitchShortcut()
+    {
+        using var source = new CanvasDocument("source")
+        {
+            SwitchShortcut = Keys.F13,
+        };
+
+        using var imported = LayoutSerializer.FromDto(LayoutSerializer.ToDto(source));
+
+        Assert.NotEqual(source.Id, imported.Id);
+        Assert.Equal(Keys.None, imported.SwitchShortcut);
+    }
+}
+
+public class CanvasShortcutTests
+{
+    [Theory]
+    [InlineData(Keys.Control | Keys.Alt | Keys.D1, true)]
+    [InlineData(Keys.F13, true)]
+    [InlineData(Keys.D1, false)]
+    [InlineData(Keys.Left, false)]
+    [InlineData(Keys.None, false)]
+    public void AllowedShortcut_RequiresModifierOrFunctionKey(Keys keys, bool expected)
+    {
+        Assert.Equal(expected, MainForm.IsCanvasShortcutAllowed(keys));
+    }
+
+    [Fact]
+    public void CanvasDocuments_HaveDistinctStableIds()
+    {
+        using var first = new CanvasDocument("first");
+        using var second = new CanvasDocument("second");
+        var id = first.Id;
+
+        first.Name = "renamed";
+
+        Assert.NotEqual(first.Id, second.Id);
+        Assert.Equal(id, first.Id);
+    }
+}
+
+public class CanvasDocumentNamingTests
+{
+    [Theory]
+    [InlineData(new string[0], "キャンバス1")]
+    [InlineData(new[] { "キャンバス1" }, "キャンバス2")]
+    [InlineData(new[] { "キャンバス1", "キャンバス3" }, "キャンバス2")]
+    [InlineData(new[] { "資料", "キャンバス2", "キャンバス3" }, "キャンバス1")]
+    public void FindAvailableDefaultName_UsesFirstUnusedPositiveNumber(string[] names, string expected)
+    {
+        Assert.Equal(expected, CanvasDocument.FindAvailableDefaultName(names));
     }
 }
 

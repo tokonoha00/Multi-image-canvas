@@ -52,12 +52,30 @@ internal sealed class OverlayForm : Form
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
     [DllImport("user32.dll")]
     private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern bool RedrawWindow(IntPtr hWnd, IntPtr updateRect, IntPtr updateRegion, uint flags);
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int x, int y, int cx, int cy, uint flags);
 
     private const int GWL_EXSTYLE = -20;
+    private const int WM_SETREDRAW = 0x000B;
     private const int WS_EX_TRANSPARENT = 0x20;
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int WS_EX_TOOLWINDOW = 0x80;
     private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+    private const uint RDW_INVALIDATE = 0x0001;
+    private const uint RDW_ERASE = 0x0004;
+    private const uint RDW_ALLCHILDREN = 0x0080;
+    private const uint RDW_UPDATENOW = 0x0100;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_NOREDRAW = 0x0008;
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_NOCOPYBITS = 0x0100;
 
     public event EventHandler? UserMoved;
 
@@ -79,11 +97,12 @@ internal sealed class OverlayForm : Form
     private readonly System.Windows.Forms.Timer _animTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _hitTestTimer = new() { Interval = 16 };
     private float _animProgress;
-    private readonly float _targetOpacity;
+    private float _targetOpacity;
     private readonly int _gridSeed;
     private readonly OverlayAnimationKind _animation;
     private bool _showFrame;
     private Point _baseLocation;
+    private int _resizeGeneration;
 
     public OverlayForm(CanvasSurface canvas, bool clickThrough, float opacity, OverlayAnimationKind animation = OverlayAnimationKind.Blocks, bool showFrame = true)
     {
@@ -137,18 +156,33 @@ internal sealed class OverlayForm : Form
             ApplyClickThrough();
             _hitTestTimer.Start();
             _baseLocation = Location;
-
-            if (_animation == OverlayAnimationKind.None)
-            {
-                _animProgress = 1f;
-                Opacity = _targetOpacity;
-                Invalidate();
-            }
-            else
-            {
-                _animTimer.Start();
-            }
+            ReplayAnimation();
         };
+    }
+
+    public void SetTargetOpacity(float opacity)
+    {
+        _targetOpacity = Math.Clamp(opacity, 0f, 1f);
+        if (!_animTimer.Enabled) Opacity = _targetOpacity;
+    }
+
+    private void ReplayAnimation()
+    {
+        _animTimer.Stop();
+        if (_animation == OverlayAnimationKind.None)
+        {
+            _animProgress = 1f;
+            Opacity = _targetOpacity;
+        }
+        else
+        {
+            _animProgress = 0f;
+            Opacity = 0;
+            if (_animation == OverlayAnimationKind.Slide)
+                Location = new Point(_baseLocation.X, _baseLocation.Y + 42);
+            _animTimer.Start();
+        }
+        Invalidate();
     }
 
     public bool ShowFrame
@@ -159,6 +193,70 @@ internal sealed class OverlayForm : Form
             if (_showFrame == value) return;
             _showFrame = value;
             Invalidate();
+        }
+    }
+
+    public void SwitchCanvas(Point location, Action updateCanvas)
+    {
+        if (!IsHandleCreated)
+        {
+            _baseLocation = location;
+            Location = location;
+            updateCanvas();
+            return;
+        }
+
+        SendMessage(Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+        try
+        {
+            _baseLocation = location;
+            if (!SetWindowPos(Handle, IntPtr.Zero, location.X, location.Y, 0, 0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOREDRAW | SWP_NOACTIVATE | SWP_NOCOPYBITS))
+            {
+                Location = location;
+            }
+            updateCanvas();
+            ReplayAnimation();
+        }
+        finally
+        {
+            SendMessage(Handle, WM_SETREDRAW, new IntPtr(1), IntPtr.Zero);
+            RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero,
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        }
+    }
+
+    public void ResizeCanvas(Size size)
+    {
+        if (size.Width <= 0 || size.Height <= 0 || Size == size) return;
+        if (!IsHandleCreated)
+        {
+            Size = size;
+            return;
+        }
+
+        int resizeGeneration = ++_resizeGeneration;
+        Opacity = 0;
+        try
+        {
+            if (!SetWindowPos(Handle, IntPtr.Zero, 0, 0, size.Width, size.Height,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOREDRAW | SWP_NOACTIVATE | SWP_NOCOPYBITS))
+            {
+                Size = size;
+            }
+        }
+        finally
+        {
+            RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero,
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+
+            BeginInvoke(() =>
+            {
+                if (IsDisposed || resizeGeneration != _resizeGeneration) return;
+                Opacity = _animTimer.Enabled
+                    ? _targetOpacity * Math.Min(1f, _animProgress * 1.5f)
+                    : _targetOpacity;
+            });
         }
     }
 

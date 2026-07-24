@@ -65,6 +65,7 @@ internal sealed class CanvasSurface : Control
     private const float MaxZoom = 16f;
     private const float ScrollBarWidth = 10f;
     private const float ScrollBarMargin = 4f;
+    internal static int ScrollbarSafeInset => (int)Math.Ceiling(ScrollBarWidth + ScrollBarMargin) + 4;
     private const float MarkerStrokeWidth = 18f;
     private const float EraserWidth = MarkerStrokeWidth;
 

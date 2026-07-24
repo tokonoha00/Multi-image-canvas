@@ -84,17 +84,22 @@ internal sealed partial class MainForm : Form
     private const int HotkeyOpacityUp = 4;
     private const int HotkeyCanvasNext = 5;
     private const int HotkeyCanvasPrev = 6;
+    private const int HotkeyCanvasDirectBase = 1000;
 
     private readonly CanvasSurface _canvas = new();
     private readonly KeyMap _keyMap = new();
 
     // ドキュメント (キャンバスタブ)
     private readonly List<CanvasDocument> _docs = [];
+    private readonly Dictionary<int, CanvasDocument> _directCanvasHotkeys = [];
     private int _activeDocIndex = -1;
 
     // 上部バー: ドロップダウンメニュー + キャンバスタブ
     private readonly MenuBarStrip _menuBar = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
-    private readonly ClickThroughToolStrip _docTabs = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
+    private readonly Panel _docBar = new() { Dock = DockStyle.Top, Height = 32 };
+    private readonly Panel _docTabsViewport = new();
+    private readonly ClickThroughToolStrip _docTabs = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.None };
+    private readonly ClickThroughToolStrip _docTools = new() { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.None };
     private readonly List<ToolStripMenuItem> _menuButtons = [];
     private readonly Dictionary<string, ToolStripMenuItem> _actionMenuItems = [];
 
@@ -103,9 +108,22 @@ internal sealed partial class MainForm : Form
     private ToolStripMenuItem? _overlayMenuBtn;
     private ToolStripTrackBar? _opacityTrack;
     private ToolStripLabel? _opacityMenuLabel;
-    private readonly ToolStripLabel _zoomText = new("100%") { Alignment = ToolStripItemAlignment.Right };
+    private readonly ToolStripLabel _zoomText = new("100%")
+    {
+        Alignment = ToolStripItemAlignment.Left,
+        AutoSize = false,
+        Width = 52,
+        TextAlign = ContentAlignment.MiddleCenter,
+        Overflow = ToolStripItemOverflow.Never,
+    };
     private ToolStripButton? _zoomInBtn, _zoomOutBtn, _zoomFitBtn;
     private ToolStripButton? _paintSelectBtn, _paintRedBtn, _paintMarkerBtn, _paintEraserBtn, _paintClearBtn;
+    private int _tabScrollOffset;
+    private int[] _tabItemOffsets = [];
+    private int _tabContentWidth;
+    private int _tabScrollTargetX;
+    private readonly System.Windows.Forms.Timer _tabScrollTimer = new() { Interval = 15 };
+    private bool _rebuildingDocTabs;
     private readonly Label _sessionTitleLabel = new();
     private readonly string[] _startupArgs;
     private static readonly HttpClient Http = new();
@@ -206,6 +224,7 @@ internal sealed partial class MainForm : Form
     private IntPtr _nativeCornerHandle;
     private bool? _nativeCornersRounded;
     private bool _liveResizing;
+    private bool _overlayResizeSyncPending;
     private bool _editorUiBuilt;
     private bool _archiveBrowserBuilt;
 
@@ -322,6 +341,7 @@ internal sealed partial class MainForm : Form
                     try
                     {
                         var doc = LayoutSerializer.FromDto(s.Tabs[i], i < s.TabFilePaths.Count ? s.TabFilePaths[i] : null);
+                        RestoreCanvasSessionState(s, i, doc);
                         if (s.OverlayLocations is { } locations && i < locations.Count && locations[i] is { Length: 2 } location)
                         {
                             doc.OverlayLocation = new Point(location[0], location[1]);
@@ -342,7 +362,7 @@ internal sealed partial class MainForm : Form
 
         if (_docs.Count == 0)
         {
-            AddDocument(new CanvasDocument(), select: true);
+            AddDocument(CreateNewCanvasDocument(), select: true);
         }
 
         // 復元した設定をUIコントロールへ反映
@@ -374,11 +394,30 @@ internal sealed partial class MainForm : Form
         BgOpacity = _canvas.BgOpacity,
         ActiveTab = _activeDocIndex,
         Tabs = _docs.Select(LayoutSerializer.ToDto).ToList(),
+        CanvasIds = _docs.Select(d => d.Id).ToList(),
+        CanvasSwitchShortcuts = _docs
+            .Where(d => d.SwitchShortcut != Keys.None)
+            .ToDictionary(d => d.Id, d => (int)d.SwitchShortcut),
         OverlayLocations = includeOverlayLocations
             ? _docs.Select(d => d.OverlayLocation is { } p ? new[] { p.X, p.Y } : null).ToList()
             : null,
         TabFilePaths = _docs.Select(d => d.FilePath).ToList(),
     };
+
+    private void RestoreCanvasSessionState(SessionData session, int index, CanvasDocument doc)
+    {
+        if (session.CanvasIds is { } ids && index < ids.Count && ids[index] != Guid.Empty
+            && _docs.All(existing => existing.Id != ids[index]))
+        {
+            doc.Id = ids[index];
+        }
+
+        if (session.CanvasSwitchShortcuts?.TryGetValue(doc.Id, out var saved) != true) return;
+        var keys = (Keys)saved;
+        if (!IsCanvasShortcutAllowed(keys) || IsShortcutReserved(keys)
+            || _docs.Any(existing => existing.SwitchShortcut == keys)) return;
+        doc.SwitchShortcut = keys;
+    }
 
     private void ApplyStoredSettings()
     {
@@ -423,6 +462,7 @@ internal sealed partial class MainForm : Form
         foreach (var doc in _docs) doc.Dispose();
         _docs.Clear();
         _activeDocIndex = -1;
+        ReregisterGlobalHotkeys();
         RebuildDocTabs();
         SyncMenuState();
         UpdateItemPanel();
@@ -430,6 +470,12 @@ internal sealed partial class MainForm : Form
 
     private void AddDocument(CanvasDocument doc, bool select, bool save = true)
     {
+        if (doc.Id == Guid.Empty || _docs.Any(existing => existing.Id == doc.Id)) doc.Id = Guid.NewGuid();
+        if (doc.SwitchShortcut != Keys.None && (IsShortcutReserved(doc.SwitchShortcut)
+            || _docs.Any(existing => existing.SwitchShortcut == doc.SwitchShortcut)))
+        {
+            doc.SwitchShortcut = Keys.None;
+        }
         _docs.Add(doc);
         doc.Changed += (_, _) =>
         {
@@ -439,10 +485,14 @@ internal sealed partial class MainForm : Form
             UpdateItemPanel();
         };
         doc.Undo.StateChanged += (_, _) => { if (_editorUiBuilt) SyncMenuState(); };
+        ReregisterGlobalHotkeys();
         if (_editorUiBuilt) RebuildDocTabs();
         if (select) SelectDocument(_docs.Count - 1);
         if (save && IsHandleCreated) SaveSession();
     }
+
+    private CanvasDocument CreateNewCanvasDocument() =>
+        new(CanvasDocument.FindAvailableDefaultName(_docs.Select(doc => doc.Name)));
 
     private void SelectDocument(int index)
     {
@@ -451,8 +501,8 @@ internal sealed partial class MainForm : Form
         if (_overlayForm != null) StoreOverlayLocation(ActiveDoc);
         _activeDocIndex = index;
         var doc = _docs[index];
-        _canvas.Document = doc;
-        if (_overlayForm != null) PositionOverlayForDocument(doc);
+        if (_overlayForm != null) SwitchOverlayToDocument(doc);
+        else _canvas.Document = doc;
         _layers?.AttachDocument(doc);
         if (!_editorUiBuilt) return;
         RebuildDocTabs();
@@ -486,101 +536,335 @@ internal sealed partial class MainForm : Form
                 string.Format(Loc.T("「{0}」を閉じますか？\n外部保存していないキャンバスは復元できません。"), doc.Name),
                 Loc.T("キャンバスを閉じる"), MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning) != DialogResult.Yes) return;
 
+        var activeDoc = ActiveDoc;
+        if (_overlayForm != null) StoreOverlayLocation(activeDoc);
         _docs.RemoveAt(index);
         if (ReferenceEquals(_canvas.Document, doc)) _canvas.Document = null;
         doc.Dispose();
+        ReregisterGlobalHotkeys();
 
-        if (_activeDocIndex >= _docs.Count) _activeDocIndex = _docs.Count - 1;
-        SelectDocument(Math.Max(0, Math.Min(_activeDocIndex, _docs.Count - 1)));
+        int nextIndex = ReferenceEquals(activeDoc, doc)
+            ? Math.Min(index, _docs.Count - 1)
+            : Math.Max(0, _docs.IndexOf(activeDoc!));
+        _activeDocIndex = -1;
+        SelectDocument(nextIndex);
         if (IsHandleCreated) SaveSession();
     }
 
-    private void RebuildDocTabs()
+    private void RebuildDocTabs(bool ensureActiveVisible = true)
     {
+        if (_rebuildingDocTabs) return;
+        _rebuildingDocTabs = true;
         _docTabs.SuspendLayout();
-        _docTabs.Items.Clear();
-
-        for (int i = 0; i < _docs.Count; i++)
+        try
         {
-            var doc = _docs[i];
-            int captured = i;
-            bool isActive = i == _activeDocIndex;
+            EnsureDocTools();
+            UpdateDocBarLayout();
+            _docTabs.Items.Clear();
 
-            var text = isActive
-                ? $" {doc.Name} "
-                : $" {doc.Name} ";
-            var btn = new SlidingToolStripButton(text)
+            if (_docs.Count == 0)
             {
-                Checked = isActive,
-                Margin = new Padding(2, 2, 0, 2),
-                Tag = captured,
-                ToolTipText = Loc.T("ダブルクリックで名前変更 / ドラッグで並べ替え"),
-            };
-            btn.DoubleClickEnabled = true;
-            btn.DoubleClick += (_, _) =>
-            {
-                if (_tabDragActive) return;
-                SelectDocument(captured);
-                RenameActiveDoc();
-            };
-
-            // ドラッグ&ドロップで並べ替え (6px以上動いたらドラッグ扱い)
-            btn.MouseDown += (_, e) =>
-            {
-                if (e.Button != MouseButtons.Left) return;
-                BeginTabDrag(captured);
-            };
-            btn.MouseMove += (_, _) =>
-            {
-                UpdateTabDrag();
-            };
-            btn.MouseUp += (_, e) =>
-            {
-                if (e.Button != MouseButtons.Left) return;
-                CompleteTabDrag();
-            };
-
-            if (!isActive)
-            {
-                btn.Click += (_, _) =>
-                {
-                    if (_suppressTabClick) { _suppressTabClick = false; return; }
-                    SelectDocument(captured);
-                };
+                _tabScrollOffset = 0;
+                return;
             }
-            _docTabs.Items.Add(btn);
+
+            int available = Math.Max(1, _docTabsViewport.ClientSize.Width - _docTabs.Padding.Horizontal);
+            var widths = _docs.Select(doc => Math.Clamp(
+                TextRenderer.MeasureText($" {doc.Name} ", _docTabs.Font).Width + 8,
+                56,
+                220)).ToArray();
+            const int trailingActionsWidth = 168;
+
+            int start = Math.Clamp(_tabScrollOffset, 0, _docs.Count - 1);
+            if (ensureActiveVisible && _activeDocIndex >= 0)
+            {
+                start = Math.Min(start, _activeDocIndex);
+                int activeWidth = widths[_activeDocIndex] + 2
+                    + (_activeDocIndex == _docs.Count - 1 ? trailingActionsWidth : 0);
+                for (int i = _activeDocIndex - 1; i >= start; i--) activeWidth += widths[i] + 2;
+                while (start < _activeDocIndex && activeWidth > available)
+                {
+                    activeWidth -= widths[start] + 2;
+                    start++;
+                }
+                while (start > 0 && activeWidth + widths[start - 1] + 2 <= available)
+                {
+                    start--;
+                    activeWidth += widths[start] + 2;
+                }
+            }
+            _tabScrollOffset = start;
+
+            _tabItemOffsets = new int[_docs.Count];
+            int used = _docTabs.Padding.Left;
+            for (int i = 0; i < _docs.Count; i++)
+            {
+                int itemWidth = widths[i];
+                _tabItemOffsets[i] = used;
+
+                var doc = _docs[i];
+                int captured = i;
+                bool isActive = i == _activeDocIndex;
+                var btn = new SlidingToolStripButton($" {doc.Name} ")
+                {
+                    AutoSize = false,
+                    Width = itemWidth,
+                    Checked = isActive,
+                    Margin = new Padding(2, 2, 0, 2),
+                    Overflow = ToolStripItemOverflow.Never,
+                    Tag = captured,
+                    ToolTipText = BuildCanvasTabToolTip(doc),
+                };
+                btn.MouseDown += (_, e) =>
+                {
+                    if (e.Button == MouseButtons.Left) BeginTabDrag(captured);
+                };
+                btn.MouseMove += (_, _) => UpdateTabDrag();
+                btn.MouseUp += (_, e) =>
+                {
+                    if (e.Button == MouseButtons.Left) CompleteTabDrag();
+                    else if (e.Button == MouseButtons.Right) ShowCanvasShortcutMenu(doc);
+                };
+                if (!isActive)
+                {
+                    btn.Click += (_, _) =>
+                    {
+                        if (_suppressTabClick) { _suppressTabClick = false; return; }
+                        SelectDocument(captured);
+                    };
+                }
+                _docTabs.Items.Add(btn);
+                used += itemWidth + btn.Margin.Horizontal;
+            }
+
+            var addBtn = new ToolStripButton(" ＋ ")
+            {
+                AutoSize = false,
+                Width = 38,
+                Margin = new Padding(6, 2, 2, 2),
+                Overflow = ToolStripItemOverflow.Never,
+                ToolTipText = Loc.T("新規キャンバス (Ctrl+T)"),
+            };
+            addBtn.Click += (_, _) => AddDocument(CreateNewCanvasDocument(), select: true);
+            _docTabs.Items.Add(addBtn);
+            used += addBtn.Width + addBtn.Margin.Horizontal;
+
+            var closeBtn = new ToolStripButton(" " + Loc.T("キャンバスを閉じる") + " ")
+            {
+                AutoSize = false,
+                Width = 118,
+                Margin = new Padding(2),
+                Overflow = ToolStripItemOverflow.Never,
+                ToolTipText = Loc.T("現在のキャンバスを閉じる (Ctrl+W)"),
+            };
+            closeBtn.Click += (_, _) => CloseDocument(_activeDocIndex);
+            _docTabs.Items.Add(closeBtn);
+            used += closeBtn.Width + closeBtn.Margin.Horizontal + _docTabs.Padding.Right;
+
+            _tabContentWidth = Math.Max(used, _docTabsViewport.ClientSize.Width);
+            _docTabs.SetBounds(_docTabs.Left, 0, _tabContentWidth, _docTabsViewport.ClientSize.Height);
+            SetTabScrollPosition(animate: false);
+            UpdatePaintButtons();
+        }
+        finally
+        {
+            _docTabs.ResumeLayout();
+            _rebuildingDocTabs = false;
+        }
+    }
+
+    private static string BuildCanvasTabToolTip(CanvasDocument doc)
+    {
+        var text = Loc.T("右クリックで名前変更 / ドラッグで並べ替え");
+        return doc.SwitchShortcut == Keys.None
+            ? text
+            : text + Environment.NewLine + string.Format(Loc.T("切り替えキー: {0}"), KeyMap.ToDisplay(doc.SwitchShortcut));
+    }
+
+    private void ShowCanvasShortcutMenu(CanvasDocument doc)
+    {
+        var menu = new ContextMenuStrip
+        {
+            Renderer = new ThemedToolStripRenderer(),
+            BackColor = Theme.Current.Surface,
+            ForeColor = Theme.Current.TextPrimary,
+        };
+        var current = new ToolStripMenuItem(doc.SwitchShortcut == Keys.None
+            ? Loc.T("切り替えキー: 未設定")
+            : string.Format(Loc.T("切り替えキー: {0}"), KeyMap.ToDisplay(doc.SwitchShortcut)))
+        {
+            Enabled = false,
+        };
+        var rename = new ToolStripMenuItem(Loc.T("キャンバス名の変更"));
+        rename.Click += (_, _) => BeginInvoke(() =>
+        {
+            int index = _docs.IndexOf(doc);
+            if (index < 0) return;
+            SelectDocument(index);
+            RenameActiveDoc();
+        });
+        var assign = new ToolStripMenuItem(Loc.T("切り替えキーを設定..."));
+        assign.Click += (_, _) => BeginInvoke(() => AssignCanvasShortcut(doc));
+        var clear = new ToolStripMenuItem(Loc.T("割り当て解除")) { Enabled = doc.SwitchShortcut != Keys.None };
+        clear.Click += (_, _) => ClearCanvasShortcut(doc);
+        menu.Items.AddRange([rename, new ToolStripSeparator(), current, assign, clear]);
+        menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
+        menu.Show(Cursor.Position);
+    }
+
+    private void AssignCanvasShortcut(CanvasDocument doc)
+    {
+        if (!_docs.Contains(doc)) return;
+        using var dialog = new KeyCaptureForm(string.Format(Loc.T("{0}へ切り替え"), doc.Name));
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.CapturedKeys == Keys.None) return;
+        var keys = dialog.CapturedKeys;
+
+        if (!IsCanvasShortcutAllowed(keys))
+        {
+            MessageBox.Show(this,
+                Loc.T("キャンバス切り替えには修飾キーを含む組み合わせ、またはファンクションキーを割り当ててください。"),
+                Loc.T("キー割り当て"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
         }
 
-        var addBtn = new ToolStripButton(" ＋ ") { Margin = new Padding(6, 2, 2, 2), ToolTipText = Loc.T("新規キャンバス (Ctrl+T)") };
-        addBtn.Click += (_, _) => AddDocument(new CanvasDocument(), select: true);
-        _docTabs.Items.Add(addBtn);
+        if (_keyMap.FindByKeys(keys) is { } binding)
+        {
+            MessageBox.Show(this,
+                string.Format(Loc.T("{0} は「{1}」に割り当てられています。設定画面で先に割り当てを変更してください。"),
+                    KeyMap.ToDisplay(keys), Loc.T(binding.Label)),
+                Loc.T("キーの競合"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
 
-        var closeBtn = new ToolStripButton(" " + Loc.T("キャンバスを閉じる") + " ") { Margin = new Padding(2, 2, 2, 2), ToolTipText = Loc.T("現在のキャンバスを閉じる (Ctrl+W)") };
-        closeBtn.Click += (_, _) => CloseDocument(_activeDocIndex);
-        _docTabs.Items.Add(closeBtn);
+        if (IsFixedShortcut(keys))
+        {
+            MessageBox.Show(this, Loc.T("このキーはアプリの固定操作に使用されています。"),
+                Loc.T("キーの競合"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
 
-        // 右端: ズーム操作 (Alignment.Rightは先に追加したものが右端に来る)
-        _zoomInBtn ??= MakeDocTabButton(" ＋ ", Loc.T("ズームイン"), (_, _) => _canvas.SetZoom(_canvas.Zoom * 1.15f));
-        _zoomOutBtn ??= MakeDocTabButton(" － ", Loc.T("ズームアウト"), (_, _) => _canvas.SetZoom(_canvas.Zoom / 1.15f));
-        _zoomFitBtn ??= MakeDocTabButton(" 🗺 ", Loc.T("全体表示"), (_, _) => _canvas.ZoomFitAll());
-        _paintSelectBtn ??= MakePaintButton(PaintIconKind.Select, Loc.T("画像選択"), (_, _) => SetPaintTool(PaintTool.None));
-        _paintRedBtn ??= MakePaintButton(PaintIconKind.Pen, Loc.T("赤ペン"), (_, _) => TogglePaintTool(PaintTool.RedPen));
-        _paintMarkerBtn ??= MakePaintButton(PaintIconKind.Marker, Loc.T("黄色マーカー"), (_, _) => TogglePaintTool(PaintTool.YellowMarker));
-        _paintEraserBtn ??= MakePaintButton(PaintIconKind.Eraser, Loc.T("消しゴム"), (_, _) => TogglePaintTool(PaintTool.Eraser));
-        _paintClearBtn ??= MakePaintButton(PaintIconKind.Mop, Loc.T("全消し"), (_, _) => _canvas.ClearPaintStrokes());
-        _docTabs.Items.Add(_zoomText);
-        _docTabs.Items.Add(_zoomInBtn);
-        _docTabs.Items.Add(_zoomOutBtn);
-        _docTabs.Items.Add(_zoomFitBtn);
-        _docTabs.Items.Add(new ToolStripSeparator { Alignment = ToolStripItemAlignment.Right });
-        _docTabs.Items.Add(_paintClearBtn);
-        _docTabs.Items.Add(_paintEraserBtn);
-        _docTabs.Items.Add(_paintMarkerBtn);
-        _docTabs.Items.Add(_paintRedBtn);
-        _docTabs.Items.Add(_paintSelectBtn);
-        UpdatePaintButtons();
+        var previousOwner = _docs.FirstOrDefault(other => !ReferenceEquals(other, doc) && other.SwitchShortcut == keys);
+        if (previousOwner != null && MessageBox.Show(this,
+                string.Format(Loc.T("{0} は「{1}」の切り替えに割り当てられています。移動しますか？"),
+                    KeyMap.ToDisplay(keys), previousOwner.Name),
+                Loc.T("キーの競合"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            return;
+        }
 
-        _docTabs.ResumeLayout();
+        var oldShortcut = doc.SwitchShortcut;
+        if (previousOwner != null) previousOwner.SwitchShortcut = Keys.None;
+        doc.SwitchShortcut = keys;
+        ReregisterGlobalHotkeys();
+        if (!_directCanvasHotkeys.Values.Contains(doc))
+        {
+            doc.SwitchShortcut = oldShortcut;
+            if (previousOwner != null) previousOwner.SwitchShortcut = keys;
+            ReregisterGlobalHotkeys();
+            MessageBox.Show(this,
+                Loc.T("このキーはWindowsまたは別のアプリで使用されているため登録できませんでした。"),
+                Loc.T("キー割り当て"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        RebuildDocTabs();
+        SaveSession();
+    }
+
+    private void ClearCanvasShortcut(CanvasDocument doc)
+    {
+        if (!_docs.Contains(doc) || doc.SwitchShortcut == Keys.None) return;
+        doc.SwitchShortcut = Keys.None;
+        ReregisterGlobalHotkeys();
+        RebuildDocTabs();
+        SaveSession();
+    }
+
+    internal static bool IsCanvasShortcutAllowed(Keys keys)
+    {
+        if (keys == Keys.None || (keys & Keys.KeyCode) == Keys.None) return false;
+        bool hasModifier = (keys & (Keys.Control | Keys.Alt | Keys.Shift)) != 0;
+        var keyCode = keys & Keys.KeyCode;
+        return hasModifier || keyCode is >= Keys.F1 and <= Keys.F24;
+    }
+
+    private bool IsShortcutReserved(Keys keys) => _keyMap.FindByKeys(keys) != null || IsFixedShortcut(keys);
+
+    private static bool IsFixedShortcut(Keys keys) =>
+        keys is (Keys.Control | Keys.Tab) or (Keys.Control | Keys.Shift | Keys.Z);
+
+    private void EnsureDocTools()
+    {
+        if (_docTools.Items.Count == 0)
+        {
+            _zoomInBtn = MakeFixedDocToolButton(" ＋ ", Loc.T("ズームイン"), (_, _) => _canvas.SetZoom(_canvas.Zoom * 1.15f));
+            _zoomOutBtn = MakeFixedDocToolButton(" － ", Loc.T("ズームアウト"), (_, _) => _canvas.SetZoom(_canvas.Zoom / 1.15f));
+            _zoomFitBtn = MakeFixedDocToolButton(" 🗺 ", Loc.T("全体表示"), (_, _) => _canvas.ZoomFitAll());
+            _paintSelectBtn = MakePaintButton(PaintIconKind.Select, Loc.T("画像選択"), (_, _) => SetPaintTool(PaintTool.None));
+            _paintRedBtn = MakePaintButton(PaintIconKind.Pen, Loc.T("赤ペン"), (_, _) => TogglePaintTool(PaintTool.RedPen));
+            _paintMarkerBtn = MakePaintButton(PaintIconKind.Marker, Loc.T("黄色マーカー"), (_, _) => TogglePaintTool(PaintTool.YellowMarker));
+            _paintEraserBtn = MakePaintButton(PaintIconKind.Eraser, Loc.T("消しゴム"), (_, _) => TogglePaintTool(PaintTool.Eraser));
+            _paintClearBtn = MakePaintButton(PaintIconKind.Mop, Loc.T("全消し"), (_, _) => _canvas.ClearPaintStrokes());
+
+            _docTools.Items.Add(_paintSelectBtn);
+            _docTools.Items.Add(_paintRedBtn);
+            _docTools.Items.Add(_paintMarkerBtn);
+            _docTools.Items.Add(_paintEraserBtn);
+            _docTools.Items.Add(_paintClearBtn);
+            _docTools.Items.Add(new ToolStripSeparator { Overflow = ToolStripItemOverflow.Never });
+            _docTools.Items.Add(_zoomFitBtn);
+            _docTools.Items.Add(_zoomOutBtn);
+            _docTools.Items.Add(_zoomInBtn);
+            _docTools.Items.Add(_zoomText);
+        }
+    }
+
+    private void UpdateDocBarLayout()
+    {
+        if (_docBar.ClientSize.Width <= 0) return;
+        _docTools.PerformLayout();
+        int toolsWidth = _docTools.Padding.Horizontal + _docTools.Items.Cast<ToolStripItem>()
+            .Sum(item => item.Width + item.Margin.Horizontal);
+        toolsWidth = Math.Min(toolsWidth, Math.Max(0, _docBar.ClientSize.Width - 80));
+        _docTabsViewport.SetBounds(0, 0, _docBar.ClientSize.Width - toolsWidth, _docBar.ClientSize.Height);
+        _docTools.SetBounds(_docBar.ClientSize.Width - toolsWidth, 0, toolsWidth, _docBar.ClientSize.Height);
+    }
+
+    private void ScrollCanvasTabs(int delta)
+    {
+        if (_docs.Count <= 1 || _tabDragActive) return;
+        int next = Math.Clamp(_tabScrollOffset + delta, 0, _docs.Count);
+        if (next == _tabScrollOffset) return;
+        _tabScrollOffset = next;
+        SetTabScrollPosition(animate: true);
+    }
+
+    private void SetTabScrollPosition(bool animate)
+    {
+        if (_tabItemOffsets.Length == 0) return;
+        int minimumX = Math.Min(0, _docTabsViewport.ClientSize.Width - _tabContentWidth);
+        _tabScrollTargetX = _tabScrollOffset >= _tabItemOffsets.Length
+            ? minimumX
+            : Math.Clamp(-_tabItemOffsets[Math.Max(0, _tabScrollOffset)], minimumX, 0);
+        if (!animate)
+        {
+            _tabScrollTimer.Stop();
+            _docTabs.Left = _tabScrollTargetX;
+            return;
+        }
+        _tabScrollTimer.Start();
+    }
+
+    private void AnimateTabScroll()
+    {
+        int distance = _tabScrollTargetX - _docTabs.Left;
+        if (Math.Abs(distance) <= 1)
+        {
+            _docTabs.Left = _tabScrollTargetX;
+            _tabScrollTimer.Stop();
+            return;
+        }
+        _docTabs.Left += Math.Sign(distance) * Math.Max(1, (int)Math.Ceiling(Math.Abs(distance) * 0.24));
     }
 
     private void TogglePaintTool(PaintTool tool)
@@ -648,9 +932,23 @@ internal sealed partial class MainForm : Form
 
     private static ToolStripButton MakeDocTabButton(string text, string tooltip, EventHandler onClick)
     {
-        var b = new ToolStripButton(text) { Alignment = ToolStripItemAlignment.Right, Margin = new Padding(2, 2, 2, 2), ToolTipText = tooltip };
+        var b = new ToolStripButton(text)
+        {
+            Alignment = ToolStripItemAlignment.Left,
+            Margin = new Padding(2, 2, 2, 2),
+            Overflow = ToolStripItemOverflow.Never,
+            ToolTipText = tooltip,
+        };
         b.Click += onClick;
         return b;
+    }
+
+    private static ToolStripButton MakeFixedDocToolButton(string text, string tooltip, EventHandler onClick, int width = 34)
+    {
+        var button = MakeDocTabButton(text, tooltip, onClick);
+        button.AutoSize = false;
+        button.Size = new Size(width, 26);
+        return button;
     }
 
     private ToolStripButton MakePaintButton(PaintIconKind icon, string tooltip, EventHandler onClick)
@@ -842,7 +1140,7 @@ internal sealed partial class MainForm : Form
 
     private void BuildMenuBar()
     {
-        foreach (var strip in new ToolStrip[] { _menuBar, _docTabs })
+        foreach (var strip in new ToolStrip[] { _menuBar, _docTabs, _docTools })
         {
             strip.Renderer = new ThemedToolStripRenderer();
             strip.BackColor = Theme.Current.ToolbarBg;
@@ -851,8 +1149,22 @@ internal sealed partial class MainForm : Form
         }
         _menuBar.Padding = new Padding(10, 4, 10, 2);
         _menuBar.Height = 40;
-        _docTabs.Padding = new Padding(10, 2, 10, 2);
+        _docTabs.Padding = new Padding(10, 2, 0, 2);
+        _docTabs.CanOverflow = false;
         _docTabs.Height = 32;
+        _docTabsViewport.BackColor = Theme.Current.ToolbarBg;
+        _docTabsViewport.Controls.Add(_docTabs);
+        _docTools.Padding = new Padding(0, 2, 10, 2);
+        _docTools.CanOverflow = false;
+        _docTools.Height = 32;
+        _docBar.BackColor = Theme.Current.ToolbarBg;
+        _docBar.Controls.Add(_docTabsViewport);
+        _docBar.Controls.Add(_docTools);
+        _docBar.SizeChanged += (_, _) =>
+        {
+            UpdateDocBarLayout();
+            RebuildDocTabs();
+        };
 
         WireTitleBarDrag(_menuBar);
         WireTitleBarDrag(_docTabs);
@@ -863,8 +1175,13 @@ internal sealed partial class MainForm : Form
         };
         _docTabs.MouseMove += (_, _) => UpdateTabDrag();
         _docTabs.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) CompleteTabDrag(); };
+        _docTabs.MouseWheel += (_, e) => ScrollCanvasTabs(e.Delta < 0 ? 1 : -1);
+        _docTabsViewport.MouseWheel += (_, e) => ScrollCanvasTabs(e.Delta < 0 ? 1 : -1);
+        _tabScrollTimer.Tick += (_, _) => AnimateTabScroll();
 
         RebuildMenuBarItems();
+        EnsureDocTools();
+        UpdateDocBarLayout();
 
         // メニューのホバー切替は MenuBarStrip (MenuAutoExpand) が担う
     }
@@ -1226,7 +1543,7 @@ internal sealed partial class MainForm : Form
 
         _menuBar.Visible = false;
         _sessionTitleLabel.Visible = false;
-        _docTabs.Visible = false;
+        _docBar.Visible = false;
         _rightPanel.Visible = false;
         _archiveBrowserPanel.Visible = false;
         _overlayFrame.Visible = false;
@@ -1772,7 +2089,7 @@ internal sealed partial class MainForm : Form
         _viewerBar.Visible = false;
         _menuBar.Visible = true;
         _sessionTitleLabel.Visible = true;
-        _docTabs.Visible = true;
+        _docBar.Visible = true;
         _rightPanel.Visible = true;
         _overlayFrame.Visible = true;
         ApplyTreeTheme();
@@ -1862,7 +2179,7 @@ internal sealed partial class MainForm : Form
         shareMi.ToolTipText = Loc.T("個人情報を含まない画像同梱ファイル(.mics)を作成します。受け取った人はこのアプリでそのまま開けます。");
         menu.DropDownItems.Add(shareMi);
         menu.DropDownItems.Add(new ToolStripSeparator());
-        var newCanvasMi = MI("➕ " + Loc.T("新規キャンバスタブ"), "file.newTab", (_, _) => AddDocument(new CanvasDocument(), true));
+        var newCanvasMi = MI("➕ " + Loc.T("新規キャンバスタブ"), "file.newTab", (_, _) => AddDocument(CreateNewCanvasDocument(), true));
         newCanvasMi.ToolTipText = Loc.T("現在のセッション内に空のキャンバスタブを追加します。");
         menu.DropDownItems.Add(newCanvasMi);
         var closeCanvasMi = MI(Loc.T("キャンバスを閉じる"), "file.closeTab", (_, _) => CloseDocument(_activeDocIndex));
@@ -2092,6 +2409,7 @@ internal sealed partial class MainForm : Form
         Theme.Apply(dlg.SelectedTheme);
         ApplyLanguageToControls();
         UpdateMenuShortcutTexts();
+        RemoveCanvasShortcutConflictsWithKeyMap();
         ReregisterGlobalHotkeys();
         SaveSettings();
     }
@@ -2142,7 +2460,7 @@ internal sealed partial class MainForm : Form
         ApplyRoundedRegion(_overlaySettingsPanel, CornerRadius + 4);
         ApplyRoundedRegion(_overlayFrame, CornerRadius + 4);
 
-        Controls.Add(_docTabs);
+        Controls.Add(_docBar);
         Controls.Add(_menuBar);
         BuildSessionTitleLabel();
         EnsureTopBarOrder();
@@ -2162,7 +2480,7 @@ internal sealed partial class MainForm : Form
     {
         Controls.SetChildIndex(_canvas, 0);
         Controls.SetChildIndex(_viewerBar, 1);
-        Controls.SetChildIndex(_docTabs, 2);
+        Controls.SetChildIndex(_docBar, 2);
         Controls.SetChildIndex(_menuBar, 3);
     }
 
@@ -2844,18 +3162,19 @@ internal sealed partial class MainForm : Form
         int gap = 12;
         int clientWidth = Math.Max(1, _canvas.ClientSize.Width);
         int clientHeight = Math.Max(1, _canvas.ClientSize.Height);
-        int panelWidth = Math.Min(_sidebarWidth, Math.Max(120, clientWidth - margin * 2));
-        int rightX = Math.Clamp(clientWidth - margin - panelWidth, margin, Math.Max(margin, clientWidth - panelWidth));
+        int scrollbarInset = Math.Max(margin, CanvasSurface.ScrollbarSafeInset);
+        int panelWidth = Math.Min(_sidebarWidth, Math.Max(120, clientWidth - margin - scrollbarInset));
+        int rightX = Math.Clamp(clientWidth - scrollbarInset - panelWidth, margin, Math.Max(margin, clientWidth - panelWidth));
 
         _overlayFrame.Size = new Size(panelWidth, overlayHeight);
-        _overlayFrame.Location = new Point(rightX, Math.Max(margin, clientHeight - margin - overlayHeight));
+        _overlayFrame.Location = new Point(rightX, Math.Max(margin, clientHeight - scrollbarInset - overlayHeight));
 
         int rightTop = margin;
         int rightHeight = Math.Max(40, _overlayFrame.Top - gap - rightTop);
         int pickerWidth = _sidebarCollapsed ? 58 : panelWidth;
         int pickerHeight = _sidebarCollapsed ? 58 : rightHeight;
         _rightPanel.Size = new Size(pickerWidth, pickerHeight);
-        _rightPanel.Location = new Point(clientWidth - margin - pickerWidth, rightTop);
+        _rightPanel.Location = new Point(clientWidth - scrollbarInset - pickerWidth, rightTop);
         _rightPanel.BackColor = Theme.Current.Surface;
         _sidebarContent.BackColor = Theme.Current.Surface;
         if (_treeArea != null) _treeArea.BackColor = Theme.Current.TreeBg;
@@ -3185,7 +3504,7 @@ internal sealed partial class MainForm : Form
         ClearDocuments();
         _sessionFilePath = null;
         UpdateSessionTitle();
-        AddDocument(new CanvasDocument(), select: true);
+        AddDocument(CreateNewCanvasDocument(), select: true);
         SaveSession();
     }
 
@@ -3412,6 +3731,7 @@ internal sealed partial class MainForm : Form
             try
             {
                 var doc = LayoutSerializer.FromDto(session.Tabs[i], i < session.TabFilePaths.Count ? session.TabFilePaths[i] : null);
+                RestoreCanvasSessionState(session, i, doc);
                 AddDocument(doc, select: false);
             }
             catch
@@ -3420,7 +3740,7 @@ internal sealed partial class MainForm : Form
             }
         }
 
-        if (_docs.Count == 0) AddDocument(new CanvasDocument(), select: true);
+        if (_docs.Count == 0) AddDocument(CreateNewCanvasDocument(), select: true);
         else SelectDocument(Math.Clamp(session.ActiveTab, 0, _docs.Count - 1));
 
         if (_naturalMi != null) _naturalMi.Checked = _canvas.InsertNaturalSize;
@@ -3573,13 +3893,13 @@ internal sealed partial class MainForm : Form
         return new Point(clientRect.X + 20, clientRect.Y + 20);
     }
 
-    private void PositionOverlayForDocument(CanvasDocument doc)
+    private void SwitchOverlayToDocument(CanvasDocument doc)
     {
         if (_overlayForm == null) return;
         var clientRect = _canvas.RectangleToScreen(_canvas.ClientRectangle);
         var location = GetOverlayLocation(doc, clientRect);
-        _overlayForm.Location = location;
         doc.OverlayLocation ??= location;
+        _overlayForm.SwitchCanvas(location, () => _canvas.Document = doc);
     }
 
     private void StoreOverlayLocation(CanvasDocument? doc, OverlayForm? overlay = null)
@@ -3636,7 +3956,7 @@ internal sealed partial class MainForm : Form
         _overlayOpacity = Math.Clamp(value, 0.2f, 1f);
         if (_opacityTrack != null) _opacityTrack.TrackBar.Value = (int)(_overlayOpacity * 100);
         if (_opacityMenuLabel != null) _opacityMenuLabel.Text = $"{Loc.T("オーバーレイ透過率")}: {(int)(_overlayOpacity * 100)}%";
-        if (_overlayForm != null) _overlayForm.Opacity = _overlayOpacity;
+        if (_overlayForm != null) _overlayForm.SetTargetOpacity(_overlayOpacity);
         if (_overlaySettingsPanel.Visible) SyncOverlaySettingsPanel();
     }
 
@@ -3687,6 +4007,7 @@ internal sealed partial class MainForm : Form
         RegisterConfiguredHotKey(HotkeyOpacityUp, "overlay.opacityUp");
         RegisterConfiguredHotKey(HotkeyCanvasNext, "tab.next");
         RegisterConfiguredHotKey(HotkeyCanvasPrev, "tab.prev");
+        RegisterCanvasHotkeys();
     }
 
     private void UnregisterGlobalHotkeys()
@@ -3697,19 +4018,60 @@ internal sealed partial class MainForm : Form
         UnregisterHotKey(Handle, HotkeyOpacityUp);
         UnregisterHotKey(Handle, HotkeyCanvasNext);
         UnregisterHotKey(Handle, HotkeyCanvasPrev);
+        foreach (var id in _directCanvasHotkeys.Keys) UnregisterHotKey(Handle, id);
+        _directCanvasHotkeys.Clear();
     }
 
     private void RegisterConfiguredHotKey(int id, string actionId)
     {
-        var keys = _keyMap.Get(actionId);
+        TryRegisterHotKey(id, _keyMap.Get(actionId));
+    }
+
+    private void RegisterCanvasHotkeys()
+    {
+        int id = HotkeyCanvasDirectBase;
+        var failed = new List<CanvasDocument>();
+        foreach (var doc in _docs.Where(d => d.SwitchShortcut != Keys.None))
+        {
+            if (TryRegisterHotKey(id, doc.SwitchShortcut)) _directCanvasHotkeys[id] = doc;
+            else failed.Add(doc);
+            id++;
+        }
+
+        if (failed.Count == 0) return;
+        foreach (var doc in failed) doc.SwitchShortcut = Keys.None;
+        if (!IsHandleCreated) return;
+        BeginInvoke(() =>
+        {
+            if (IsDisposed) return;
+            RebuildDocTabs();
+            SaveSession();
+        });
+    }
+
+    private bool TryRegisterHotKey(int id, Keys keys)
+    {
         var keyCode = keys & Keys.KeyCode;
-        if (keys == Keys.None || keyCode == Keys.None) return;
+        if (keys == Keys.None || keyCode == Keys.None) return false;
 
         uint modifiers = 0;
         if ((keys & Keys.Control) != 0) modifiers |= MOD_CONTROL;
         if ((keys & Keys.Alt) != 0) modifiers |= MOD_ALT;
         if ((keys & Keys.Shift) != 0) modifiers |= MOD_SHIFT;
-        RegisterHotKey(Handle, id, modifiers, (uint)keyCode);
+        return RegisterHotKey(Handle, id, modifiers, (uint)keyCode);
+    }
+
+    private void RemoveCanvasShortcutConflictsWithKeyMap()
+    {
+        var conflicts = _docs.Where(d => d.SwitchShortcut != Keys.None && _keyMap.FindByKeys(d.SwitchShortcut) != null).ToList();
+        if (conflicts.Count == 0) return;
+        foreach (var doc in conflicts) doc.SwitchShortcut = Keys.None;
+        RebuildDocTabs();
+        SaveSession();
+        MessageBox.Show(this,
+            string.Format(Loc.T("設定したキーと競合したため、次のキャンバスの切り替えキーを解除しました:\n{0}"),
+                string.Join(Environment.NewLine, conflicts.Select(d => d.Name))),
+            Loc.T("キーの競合"), MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     // ===== ウィンドウ枠 =====
@@ -3730,7 +4092,11 @@ internal sealed partial class MainForm : Form
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        if (!_liveResizing) UpdateWindowRegion();
+        if (!_liveResizing)
+        {
+            UpdateWindowRegion();
+            QueueOverlaySizeSync();
+        }
         PositionSessionTitle();
         UpdateCaptionGlyphs();
     }
@@ -3746,6 +4112,19 @@ internal sealed partial class MainForm : Form
         base.OnResizeEnd(e);
         _liveResizing = false;
         UpdateWindowRegion();
+        QueueOverlaySizeSync();
+    }
+
+    private void QueueOverlaySizeSync()
+    {
+        if (_overlayForm == null || _overlayResizeSyncPending || !IsHandleCreated) return;
+        _overlayResizeSyncPending = true;
+        BeginInvoke(() =>
+        {
+            _overlayResizeSyncPending = false;
+            if (IsDisposed || _liveResizing) return;
+            _overlayForm?.ResizeCanvas(_canvas.ClientSize);
+        });
     }
 
     protected override void OnShown(EventArgs e)
@@ -3839,7 +4218,15 @@ internal sealed partial class MainForm : Form
 
         if (m.Msg == WM_HOTKEY)
         {
-            switch (m.WParam.ToInt32())
+            int hotkeyId = m.WParam.ToInt32();
+            if (_directCanvasHotkeys.TryGetValue(hotkeyId, out var directCanvas))
+            {
+                int index = _docs.IndexOf(directCanvas);
+                if (index >= 0) SelectDocument(index);
+                return;
+            }
+
+            switch (hotkeyId)
             {
                 case HotkeyToggleOverlay:
                     ToggleOverlayMode(_overlayForm == null);
@@ -3892,7 +4279,7 @@ internal sealed partial class MainForm : Form
 
         if (m.Msg == WM_NCHITTEST)
         {
-            var screenPt = new Point(m.LParam.ToInt32() & 0xffff, m.LParam.ToInt32() >> 16);
+            var screenPt = DecodeScreenPoint(m.LParam);
 
             // 最大化ボタン上ならスナップレイアウトを出すため HTMAXBUTTON を返す
             var maxRect = GetMaximizeButtonScreenRect();
@@ -3923,6 +4310,14 @@ internal sealed partial class MainForm : Form
             }
         }
         base.WndProc(ref m);
+    }
+
+    internal static Point DecodeScreenPoint(IntPtr lParam)
+    {
+        int packedPoint = lParam.ToInt32();
+        return new Point(
+            unchecked((short)(packedPoint & 0xffff)),
+            unchecked((short)((packedPoint >> 16) & 0xffff)));
     }
 
     private void ToggleMaximizeRestore()
@@ -4061,7 +4456,7 @@ internal sealed partial class MainForm : Form
             case "file.saveAs": SaveSessionAs(); break;
             case "file.open": OpenFile(); break;
             case "file.export": ExportPng(); break;
-            case "file.newTab": AddDocument(new CanvasDocument(), true); break;
+            case "file.newTab": AddDocument(CreateNewCanvasDocument(), true); break;
             case "file.closeTab": CloseDocument(_activeDocIndex); break;
             case "tab.next": SelectNextCanvas(+1); break;
             case "tab.prev": SelectNextCanvas(-1); break;
@@ -4152,7 +4547,7 @@ internal sealed partial class MainForm : Form
 
     private void ShowAbout()
     {
-        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.4";
+        var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "1.0.5";
         MessageBox.Show(this,
             $"Multi Image Canvas\n{Loc.T("バージョン情報")}: {version}",
             Loc.T("バージョン情報"),
@@ -4169,7 +4564,7 @@ internal sealed partial class MainForm : Form
         _menuBar.Visible = false;
         _viewerBar.Visible = false;
         _sessionTitleLabel.Visible = false;
-        _docTabs.Visible = false;
+        _docBar.Visible = false;
         _rightPanel.Visible = false;
         _itemPanel.Visible = false;
         _archiveBrowserPanel.Visible = false;
@@ -4192,7 +4587,7 @@ internal sealed partial class MainForm : Form
         }
         _menuBar.Visible = true;
         _sessionTitleLabel.Visible = true;
-        _docTabs.Visible = true;
+        _docBar.Visible = true;
         _rightPanel.Visible = true;
         _overlayFrame.Visible = true;
         _uiHidden = false;
@@ -4208,7 +4603,9 @@ internal sealed partial class MainForm : Form
         _sessionTitleLabel.BackColor = t.ToolbarBg;
         _sessionTitleLabel.ForeColor = t.TextSecondary;
 
-        foreach (var strip in new ToolStrip[] { _menuBar, _docTabs })
+        _docBar.BackColor = t.ToolbarBg;
+        _docTabsViewport.BackColor = t.ToolbarBg;
+        foreach (var strip in new ToolStrip[] { _menuBar, _docTabs, _docTools })
         {
             strip.BackColor = t.ToolbarBg;
             strip.ForeColor = t.TextPrimary;

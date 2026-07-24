@@ -114,11 +114,11 @@ internal static class GeometryUtil
 // 1タブ = 1ドキュメント。画像リスト・ビュー状態・Undo履歴を持つ
 internal sealed class CanvasDocument : IDisposable
 {
-    private static int _counter;
-
+    public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; }
     public string? FilePath { get; set; }
     public bool Dirty { get; set; }
+    public Keys SwitchShortcut { get; set; } = Keys.None;
 
     public List<CanvasItem> Items { get; } = [];
     public List<PaintStroke> Strokes { get; } = [];
@@ -133,9 +133,28 @@ internal sealed class CanvasDocument : IDisposable
 
     public event EventHandler? Changed;
 
-    public CanvasDocument(string? name = null)
+    public CanvasDocument(string? name)
     {
-        Name = name ?? $"キャンバス{++_counter}";
+        Name = string.IsNullOrWhiteSpace(name) ? "キャンバス1" : name;
+    }
+
+    internal static string FindAvailableDefaultName(IEnumerable<string> names)
+    {
+        const string prefix = "キャンバス";
+        var used = new HashSet<int>();
+        foreach (var name in names)
+        {
+            if (name.StartsWith(prefix, StringComparison.Ordinal)
+                && int.TryParse(name.AsSpan(prefix.Length), out int number)
+                && number > 0)
+            {
+                used.Add(number);
+            }
+        }
+
+        int available = 1;
+        while (used.Contains(available)) available++;
+        return $"{prefix}{available}";
     }
 
     public void NotifyChanged()

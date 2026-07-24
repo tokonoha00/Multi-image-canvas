@@ -102,6 +102,8 @@ public class ShareExportTests : IDisposable
         var (session, _) = ReadPackage(file);
         Assert.Null(session.WindowBounds);
         Assert.Null(session.OverlayLocations);
+        Assert.Null(session.CanvasIds);
+        Assert.Null(session.CanvasSwitchShortcuts);
     }
 
     [Fact]

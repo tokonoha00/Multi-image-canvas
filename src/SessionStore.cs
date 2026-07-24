@@ -20,6 +20,9 @@ internal sealed class SessionData
     public float BgOpacity { get; set; } = 1.0f;
     public int ActiveTab { get; set; }
     public List<LayoutDto> Tabs { get; set; } = [];
+    // セッション内だけで使うキャンバス識別子と直接切替キー。LayoutDtoへは含めない。
+    public List<Guid>? CanvasIds { get; set; }
+    public Dictionary<Guid, int>? CanvasSwitchShortcuts { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<int[]?>? OverlayLocations { get; set; }
     // タブごとの保存先パス (未保存タブは null)

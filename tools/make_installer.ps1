@@ -2,7 +2,7 @@
 # Requires: .NET 8 SDK, Inno Setup 6 (ISCC.exe)
 # Output: <repo>\installer\out\MultiImageCanvas-<version>-Setup.exe
 param(
-    [string]$Version = "1.0.4",
+    [string]$Version = "1.0.5",
     [string]$ShareDir = ""
 )
 $ErrorActionPreference = "Stop"
